@@ -1,0 +1,71 @@
+const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
+const { ChannelType, EmbedBuilder } = require('discord.js');
+const { getUserChannelId, updateAllUserChannels } = require('../utils/channelManager');
+const fs = require('fs');
+const path = require('path');
+
+module.exports = {
+    data: new SlashCommandBuilder()
+        .setName('updatechannels')
+        .setDescription('Updates all user channels to make them private')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    
+    async execute(interaction) {
+        await interaction.deferReply({ flags: { ephemeral: true } });
+        
+        try {
+            // Get the user channels data file path
+            const userChannelsPath = path.join(__dirname, '..', 'data', 'userChannels.json');
+            
+            // Check if the file exists
+            if (!fs.existsSync(userChannelsPath)) {
+                return interaction.editReply({ 
+                    content: 'No user channels data found. No channels to update.', 
+                    flags: { ephemeral: true } 
+                });
+            }
+            
+            // Read the user channels data
+            const userChannelsData = JSON.parse(fs.readFileSync(userChannelsPath, 'utf8'));
+            
+            // Get the guild
+            const guild = interaction.guild;
+            
+            // Update all user channels
+            const result = await updateAllUserChannels(guild, userChannelsData);
+            
+            // Create a response embed
+            const embed = new EmbedBuilder()
+                .setColor('#4CAF50')
+                .setTitle('Channel Privacy Update')
+                .setDescription(`Updated privacy settings for user channels`)
+                .addFields(
+                    { name: 'Channels Updated', value: `${result.updated}`, inline: true },
+                    { name: 'Channels Not Found', value: `${result.notFound}`, inline: true },
+                    { name: 'Errors', value: `${result.errors}`, inline: true }
+                )
+                .setFooter({ text: 'Ferret9 Bot' })
+                .setTimestamp();
+            
+            // Send the response
+            await interaction.editReply({ embeds: [embed], flags: { ephemeral: true } });
+            
+        } catch (error) {
+      console.error('Error updating channels:', error);
+      try {
+        if (!interaction.replied && !interaction.deferred) {
+          await interaction.reply({
+            content: "❌ An error occurred. Please try again.",
+            flags: { ephemeral: true }
+          }).catch(err => console.error('Error replying to interaction:', err));
+        } else if (interaction.deferred && !interaction.replied) {
+          await interaction.editReply({
+            content: "❌ An error occurred. Please try again."
+          }).catch(err => console.error('Error editing reply:', err));
+        }
+      } catch (replyError) {
+        console.error('Error sending error message:', replyError);
+      }
+    }
+  },
+}; 

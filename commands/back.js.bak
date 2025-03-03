@@ -1,0 +1,217 @@
+const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const { getUserChannelId } = require('../utils/channelManager');
+const { recordBackFromBreak } = require('../utils/dynamoDbManager');
+const { getActiveSession } = require('../utils/dynamoDbManager');
+const { logActivity } = require('../utils/dynamoDbManager');
+const { getAvailableCommands, formatCommandList } = require('../utils/commandHelper');
+const { synchronizeUserRoles } = require('../utils/roleManager');
+const config = require('../config/config');
+
+// Helper function to format duration
+function formatDuration(minutes) {
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  
+  if (hours === 0) {
+    return `${mins} minute${mins !== 1 ? 's' : ''}`;
+  } else if (mins === 0) {
+    return `${hours} hour${hours !== 1 ? 's' : ''}`;
+  } else {
+    return `${hours} hour${hours !== 1 ? 's' : ''} and ${mins} minute${mins !== 1 ? 's' : ''}`;
+  }
+}
+
+// Helper function to format duration with seconds
+function formatDurationWithSeconds(totalSeconds) {
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  
+  let result = '';
+  
+  if (hours > 0) {
+    result += `${hours} hour${hours !== 1 ? 's' : ''} `;
+  }
+  
+  if (minutes > 0 || hours > 0) {
+    result += `${minutes} minute${minutes !== 1 ? 's' : ''} `;
+  }
+  
+  result += `${seconds} second${seconds !== 1 ? 's' : ''}`;
+  
+  return result;
+}
+
+module.exports = {
+  data: new SlashCommandBuilder()
+    .setName('back')
+    .setDescription('Return from a break'),
+  
+  async execute(interaction) {
+    try {
+      // Check if interaction was already replied to or deferred
+      if (interaction.replied || interaction.deferred) {
+        console.log('Interaction already handled. Skipping.');
+        return;
+      }
+      
+      // Defer reply to prevent timeout
+      await interaction.deferReply({ ephemeral: true });
+      
+      const user = interaction.user;
+      const guild = interaction.guild;
+      
+      // Get the member object to check roles
+      const member = await guild.members.fetch(user.id);
+      
+      // Check if user has the onBreak role
+      if (!member.roles.cache.has(config.roles.onBreak)) {
+        await interaction.editReply({
+          content: "❌ You're not currently on break. Use `/break` to take a break first."
+        });
+        return;
+      }
+      
+      // Check if user has an active session
+      const activeSession = await getActiveSession(user.id);
+      if (!activeSession) {
+        await interaction.editReply({
+          content: "❌ You don't have an active work session. Use `/signin` to start working first."
+        });
+        return;
+      }
+      
+      // Check if user is not on break
+      if (activeSession.Status !== 'Break') {
+        await interaction.editReply({
+          content: "❌ You're not currently on break. Use `/break` to take a break first."
+        });
+        return;
+      }
+      
+      // Get user's channel ID
+      const channelId = await getUserChannelId(user.id, guild.id);
+      if (!channelId) {
+        await interaction.editReply({
+          content: "❌ You don't have a personal log channel. Use `/start` to set it up."
+        });
+        return;
+      }
+      
+      // Get the channel
+      const channel = guild.channels.cache.get(channelId);
+      if (!channel) {
+        await interaction.editReply({
+          content: "❌ Your personal log channel seems to be missing. Please use the `/start` command to set it up again."
+        });
+        return;
+      }
+      
+      // Record back from break in DynamoDB
+      const breakData = await recordBackFromBreak(user.id);
+      
+      // If no break data was found, handle the error
+      if (!breakData) {
+        await interaction.editReply({
+          content: "❌ I couldn't find your break data. Please use `/signin` to start a new session."
+        });
+        return;
+      }
+      
+      // Log the activity
+      await logActivity(user.id, 'BackFromBreak', `Break duration: ${breakData.durationMinutes} minutes`);
+      
+      // Get current time and date
+      const now = new Date();
+      const timeString = now.toLocaleTimeString('en-US', { 
+        hour: '2-digit', 
+        minute: '2-digit',
+        hour12: true 
+      });
+      
+      const dateString = now.toLocaleDateString('en-US', {
+        weekday: 'long',
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric'
+      });
+      
+      // Format break duration
+      const breakDurationFormatted = formatDuration(breakData.durationMinutes);
+      
+      // Get available commands for working users
+      const commandInfo = getAvailableCommands('Active');
+      const commandList = formatCommandList(commandInfo.commands);
+      
+      // Create back embed
+      const backEmbed = new EmbedBuilder()
+        .setColor('#4CAF50')
+        .setTitle('🔙 BACK FROM BREAK')
+        .setDescription(`# ${user} has returned from break`)
+        .addFields(
+          {
+            name: '🕒 Return Time',
+            value: `\`\`\`${timeString}\`\`\``,
+            inline: false
+          },
+          {
+            name: '⏱️ Break Duration',
+            value: `\`\`\`${breakDurationFormatted}\`\`\``,
+            inline: false
+          },
+          {
+            name: '📋 Available Commands',
+            value: commandList
+          }
+        )
+        .setAuthor({
+          name: interaction.member.nickname || user.tag,
+          iconURL: user.displayAvatarURL()
+        })
+        .setThumbnail(user.displayAvatarURL({ size: 256 }))
+        .setFooter({
+          text: 'Ferret9 Bot',
+          iconURL: interaction.client.user.displayAvatarURL()
+        })
+        .setTimestamp();
+      
+      // Send the embed to user's channel
+      await channel.send({ embeds: [backEmbed] });
+      
+      // Remove the On Break role and add Working role if configured
+      if (config.roles && config.roles.working && config.roles.onBreak) {
+        try {
+          await member.roles.remove(config.roles.onBreak);
+          await member.roles.add(config.roles.working);
+          console.log(`Updated roles for ${user.tag}: removed onBreak, added working`);
+        } catch (roleError) {
+          console.error('Error updating roles:', roleError);
+        }
+      } else {
+        console.log('Roles not configured properly in config:', config.roles);
+      }
+      
+      // Send confirmation to user
+      await interaction.editReply({
+        content: `✅ Welcome back! Your break lasted **${breakDurationFormatted}**. You're now working again.`
+      });
+      
+    } catch (error) {
+      console.error('Error in back command:', error);
+      try {
+        if (!interaction.replied && !interaction.deferred) {
+          await interaction.reply({
+            content: `❌ An error occurred: ${error.message}`,
+            ephemeral: true
+          }).catch(err => console.error('Error replying to interaction:', err));
+        } else if (interaction.deferred && !interaction.replied) {
+          await interaction.editReply({
+            content: `❌ An error occurred: ${error.message}`
+          }).catch(err => console.error('Error editing reply:', err));
+        }
+      } catch (replyError) {
+        console.error('Error sending error message:', replyError);
+      }
+    }
+  },
+}; 

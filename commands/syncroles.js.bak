@@ -1,0 +1,61 @@
+const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
+const { synchronizeAllUserRoles, synchronizeUserRoles } = require('../utils/roleManager');
+
+module.exports = {
+  data: new SlashCommandBuilder()
+    .setName('syncroles')
+    .setDescription('Synchronize user roles with their database status')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addUserOption(option => 
+      option
+        .setName('user')
+        .setDescription('Specific user to synchronize (leave empty to sync all users)')
+        .setRequired(false)
+    ),
+  
+  async execute(interaction) {
+    try {
+      // Defer reply to prevent timeout
+      await interaction.deferReply({ ephemeral: true });
+      
+      const guild = interaction.guild;
+      const targetUser = interaction.options.getUser('user');
+      
+      if (targetUser) {
+        // Sync a specific user
+        const success = await synchronizeUserRoles(guild, targetUser.id);
+        
+        if (success) {
+          await interaction.editReply({
+            content: `✅ Successfully synchronized roles for user ${targetUser}.`,
+            ephemeral: true
+          });
+        } else {
+          await interaction.editReply({
+            content: `❌ Failed to synchronize roles for user ${targetUser}. Check the logs for details.`,
+            ephemeral: true
+          });
+        }
+      } else {
+        // Sync all users
+        await interaction.editReply({
+          content: `⏳ Synchronizing roles for all users. This may take a moment...`,
+          ephemeral: true
+        });
+        
+        const syncCount = await synchronizeAllUserRoles(guild);
+        
+        await interaction.editReply({
+          content: `✅ Successfully synchronized roles for ${syncCount} users.`,
+          ephemeral: true
+        });
+      }
+    } catch (error) {
+      console.error('Error in syncroles command:', error);
+      await interaction.editReply({
+        content: `❌ An error occurred: ${error.message}`,
+        ephemeral: true
+      });
+    }
+  },
+}; 

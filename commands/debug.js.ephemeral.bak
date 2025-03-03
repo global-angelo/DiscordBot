@@ -1,0 +1,144 @@
+const { SlashCommandBuilder, PermissionFlagsBits, ChannelType } = require('discord.js');
+const { getUserLogChannel } = require('../utils/channelManager');
+
+module.exports = {
+  data: new SlashCommandBuilder()
+    .setName('debug')
+    .setDescription('Debug bot permissions and functionality'),
+  
+  async execute(interaction) {
+    try {
+// Check if interaction was already replied to or deferred
+      if (interaction.replied || interaction.deferred) {
+        console.log('Interaction already handled. Skipping.');
+        return;
+      }
+      
+      
+      const guild = interaction.guild;
+      const user = interaction.user;
+      
+      // Reply to the user that we're checking permissions
+      await interaction.reply({ 
+        content: 'Checking bot permissions and functionality...',
+        flags: { ephemeral: true } 
+      });
+      
+      // Check bot permissions
+      const botMember = guild.members.me;
+      const hasManageChannels = botMember.permissions.has(PermissionFlagsBits.ManageChannels);
+      const hasManageRoles = botMember.permissions.has(PermissionFlagsBits.ManageRoles);
+      const hasSendMessages = botMember.permissions.has(PermissionFlagsBits.SendMessages);
+      const hasEmbedLinks = botMember.permissions.has(PermissionFlagsBits.EmbedLinks);
+      
+      // Check if Work Log category exists (with different capitalizations)
+      const workLogCategory = guild.channels.cache.find(
+        c => (c.name === 'Work Log' || c.name === 'work-log' || c.name.toLowerCase() === 'work log') && 
+             c.type === ChannelType.GuildCategory
+      );
+      
+      // Check if logs category exists
+      const logsCategory = guild.channels.cache.find(
+        c => c.name.toLowerCase() === 'logs' && c.type === ChannelType.GuildCategory
+      );
+      
+      // Build debug message
+      let debugMessage = '## Bot Debug Information\n\n';
+      debugMessage += `**Bot User:** ${interaction.client.user.tag}\n`;
+      debugMessage += `**Guild:** ${guild.name} (${guild.id})\n`;
+      debugMessage += `**User:** ${user.tag} (${user.id})\n\n`;
+      
+      debugMessage += '### Permissions\n';
+      debugMessage += `- Manage Channels: ${hasManageChannels ? '✅' : '❌'}\n`;
+      debugMessage += `- Manage Roles: ${hasManageRoles ? '✅' : '❌'}\n`;
+      debugMessage += `- Send Messages: ${hasSendMessages ? '✅' : '❌'}\n`;
+      debugMessage += `- Embed Links: ${hasEmbedLinks ? '✅' : '❌'}\n\n`;
+      
+      debugMessage += '### Guild Structure\n';
+      debugMessage += `- Work Log Category: ${workLogCategory ? `✅ (${workLogCategory.name})` : '❌ (Not found)'}\n`;
+      debugMessage += `- Logs Category: ${logsCategory ? `✅ (${logsCategory.name})` : '❌ (Not found)'}\n\n`;
+      
+      // Check for existing user log channel before trying to create one
+      const existingChannel = guild.channels.cache.find(
+        c => (c.name === user.username.toLowerCase().replace(/\s+/g, '-') || 
+             c.name === user.username.toLowerCase() || 
+             c.name.includes(user.username.toLowerCase())) && 
+             c.type === ChannelType.GuildText
+      );
+      
+      if (existingChannel) {
+        debugMessage += `### Existing User Log Channel\n`;
+        debugMessage += `- Channel: <#${existingChannel.id}> (${existingChannel.name})\n`;
+        debugMessage += `- Category: ${existingChannel.parent ? existingChannel.parent.name : 'None'}\n`;
+        
+        // Check bot permissions in the existing channel
+        const channelPerms = existingChannel.permissionsFor(botMember);
+        debugMessage += `- Bot can send messages: ${channelPerms.has(PermissionFlagsBits.SendMessages) ? '✅' : '❌'}\n`;
+        debugMessage += `- Bot can embed links: ${channelPerms.has(PermissionFlagsBits.EmbedLinks) ? '✅' : '❌'}\n\n`;
+      }
+      
+      // Try to create a personal log channel
+      debugMessage += '### Testing Channel Creation\n';
+      debugMessage += '- Attempting to create/get personal log channel...\n';
+      
+      try {
+        console.log(`Debug command: Attempting to get/create log channel for ${user.tag}`);
+        const userLogChannel = await getUserLogChannel(guild, user);
+        
+        if (userLogChannel) {
+          debugMessage += `- ✅ Success! Channel created/found: <#${userLogChannel.id}>\n`;
+          debugMessage += `- Channel Name: ${userLogChannel.name}\n`;
+          debugMessage += `- Category: ${userLogChannel.parent ? userLogChannel.parent.name : 'None'}\n`;
+          
+          // Check bot permissions in the channel
+          const channelPerms = userLogChannel.permissionsFor(botMember);
+          debugMessage += `- Bot can send messages: ${channelPerms.has(PermissionFlagsBits.SendMessages) ? '✅' : '❌'}\n`;
+          debugMessage += `- Bot can embed links: ${channelPerms.has(PermissionFlagsBits.EmbedLinks) ? '✅' : '❌'}\n`;
+          
+          // Test sending a message to the channel
+          try {
+            const testMessage = await userLogChannel.send(`Test message from debug command - ${new Date().toLocaleTimeString()}`);
+            debugMessage += `- ✅ Successfully sent test message to channel\n`;
+            
+            // Delete the test message after 5 seconds
+            setTimeout(() => {
+              testMessage.delete().catch(e => console.error('Could not delete test message:', e));
+            }, 5000);
+          } catch (sendError) {
+            debugMessage += `- ❌ Failed to send test message: ${sendError.message}\n`;
+          }
+        } else {
+          debugMessage += `- ❌ Failed to create/get personal log channel. Check console for errors.\n`;
+        }
+      } catch (channelError) {
+        debugMessage += `- ❌ Error creating channel: ${channelError.message}\n`;
+        if (channelError.code) {
+          debugMessage += `- Error code: ${channelError.code}\n`;
+        }
+      }
+      
+      // Update the reply with the debug information
+      await interaction.editReply({ 
+        content: debugMessage,
+        flags: { ephemeral: true } 
+      });
+      
+    } catch (error) {
+      console.error('Error executing debug command:', error);
+      try {
+        if (!interaction.replied && !interaction.deferred) {
+          await interaction.reply({
+            content: "❌ An error occurred. Please try again.",
+            flags: { ephemeral: true }
+          }).catch(err => console.error('Error replying to interaction:', err));
+        } else if (interaction.deferred && !interaction.replied) {
+          await interaction.editReply({
+            content: "❌ An error occurred. Please try again."
+          }).catch(err => console.error('Error editing reply:', err));
+        }
+      } catch (replyError) {
+        console.error('Error sending error message:', replyError);
+      }
+    }
+  },
+}; 

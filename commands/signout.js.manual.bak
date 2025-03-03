@@ -1,0 +1,266 @@
+const { SlashCommandBuilder, EmbedBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = require('discord.js');
+const { getUserChannelId } = require('../utils/channelManager');
+const { getActiveSession, endUserSession, logActivity } = require('../utils/dynamoDbManager');
+const { getAvailableCommands, formatCommandList } = require('../utils/commandHelper');
+const config = require('../config/config');
+
+// Role IDs
+const WORKING_ROLE_ID = '1345394475165548615';
+const ON_BREAK_ROLE_ID = '1345394581642022933';
+
+// Helper function to format duration
+function formatDuration(minutes) {
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  
+  if (hours === 0) {
+    return `${mins} minute${mins !== 1 ? 's' : ''}`;
+  } else if (mins === 0) {
+    return `${hours} hour${hours !== 1 ? 's' : ''}`;
+  } else {
+    return `${hours} hour${hours !== 1 ? 's' : ''} and ${mins} minute${mins !== 1 ? 's' : ''}`;
+  }
+}
+
+module.exports = {
+  data: new SlashCommandBuilder()
+    .setName('signout')
+    .setDescription('End your work session'),
+  
+  async execute(interaction) {
+    try {
+// Check if interaction was already replied to or deferred
+      if (interaction.replied || interaction.deferred) {
+        console.log('Interaction already handled. Skipping.');
+        return;
+      }
+      
+      
+      // Check if interaction was already replied to or deferred
+      if (interaction.replied || interaction.deferred) {
+        console.log('Interaction already handled. Skipping.');
+        return;
+      }
+
+      const user = interaction.user;
+      const guild = interaction.guild;
+      
+      // Get the member object to check roles
+      const member = await guild.members.fetch(user.id);
+      
+      // Check if user has neither working nor onBreak role
+      if (!member.roles.cache.has(config.roles.working) && !member.roles.cache.has(config.roles.onBreak)) {
+        await interaction.reply({
+          content: "❌ You're not currently signed in. Use `/signin` to start a work session.",
+          flags: { flags: { ephemeral: true } }
+        });
+        return;
+      }
+      
+      // Check if user has an active session
+      const activeSession = await getActiveSession(user.id);
+      if (!activeSession) {
+        await interaction.reply({
+          content: "❌ You don't have an active work session. Use `/signin` to start working first.",
+          flags: { flags: { ephemeral: true } }
+        });
+        return;
+      }
+      
+      // Check if user is already signed out
+      if (activeSession.Status === 'SignedOut') {
+        await interaction.reply({
+          content: "❌ You're already signed out. Use `/signin` to start a new work session.",
+          flags: { flags: { ephemeral: true } }
+        });
+        return;
+      }
+      
+      // Create a modal for the work summary
+      const modal = new ModalBuilder()
+        .setCustomId('signout-modal')
+        .setTitle('Work Session Summary');
+      
+      // Add a text input for the work summary
+      const workSummaryInput = new TextInputBuilder()
+        .setCustomId('work-summary')
+        .setLabel('What did you work on during this session?')
+        .setStyle(TextInputStyle.Paragraph)
+        .setPlaceholder(`Project
+ - Did this
+ - Did this
+
+Another project
+ - Did this
+ - Did that
+
+Your formatting will be preserved in the summary.`)
+        .setRequired(true)
+        .setMinLength(10)
+        .setMaxLength(4000);
+      
+      // Add the text input to an action row
+      const actionRow = new ActionRowBuilder().addComponents(workSummaryInput);
+      
+      // Add the action row to the modal
+      modal.addComponents(actionRow);
+      
+      // Show the modal to the user
+      await interaction.showModal(modal);
+      
+      // Wait for the modal submission
+      const filter = i => i.customId === 'signout-modal' && i.user.id === user.id;
+      const submission = await interaction.awaitModalSubmit({ filter, time: 300000 }); // 5 minutes timeout
+      
+      if (!submission) {
+        return; // User didn't submit the modal in time
+      }
+      
+      // Get the work summary from the modal
+      const workSummary = submission.fields.getTextInputValue('work-summary');
+      
+      // Defer the reply to prevent timeout
+      await submission.deferReply({ flags: { flags: { ephemeral: true } } });
+      
+      // Get user's channel ID
+      const channelId = await getUserChannelId(user.id, guild.id);
+      if (!channelId) {
+        await submission.editReply({
+          content: "❌ I couldn't find your personal log channel. Please use the `/start` command first."
+        });
+        return;
+      }
+      
+      // Get the channel
+      const channel = guild.channels.cache.get(channelId);
+      if (!channel) {
+        await submission.editReply({
+          content: "❌ Your personal log channel seems to be missing. Please use the `/start` command to set it up again."
+        });
+        return;
+      }
+      
+      // End the session in DynamoDB
+      const sessionData = await endUserSession(user.id, activeSession.SessionId, workSummary);
+      
+      // Get current time for the message
+      const now = new Date();
+      const timeString = now.toLocaleTimeString('en-US', { 
+        hour: '2-digit', 
+        minute: '2-digit',
+        hour12: true 
+      });
+      
+      const dateString = now.toLocaleDateString('en-US', {
+        weekday: 'long',
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric'
+      });
+      
+      // Calculate work duration
+      const workHours = Math.floor(sessionData.TotalWorkDuration / 60);
+      const workMinutes = sessionData.TotalWorkDuration % 60;
+      
+      const workDurationString = workHours > 0 
+        ? `${workHours} hour${workHours !== 1 ? 's' : ''} ${workMinutes > 0 ? `${workMinutes} minute${workMinutes !== 1 ? 's' : ''}` : ''}`
+        : `${workMinutes} minute${workMinutes !== 1 ? 's' : ''}`;
+      
+      // Calculate break duration
+      const breakDurationString = sessionData.TotalBreakDuration > 0 
+        ? `${sessionData.TotalBreakDuration} minute${sessionData.TotalBreakDuration !== 1 ? 's' : ''}`
+        : 'No breaks taken';
+      
+      // Get available commands for inactive users
+      const commandInfo = getAvailableCommands('Inactive');
+      const commandList = formatCommandList(commandInfo.commands);
+      
+      // Create sign-out embed
+      const signOutEmbed = new EmbedBuilder()
+        .setColor('#F44336')
+        .setTitle('🔴 SIGNED OUT')
+        .setDescription(`# ${user} has signed out`)
+        .addFields(
+          {
+            name: '🕒 Time & Date',
+            value: `\`\`\`${timeString} | ${dateString}\`\`\``,
+            inline: false
+          },
+          {
+            name: '⏱️ Session Duration',
+            value: `\`\`\`${workDurationString}\`\`\``,
+            inline: false
+          }
+        )
+        .setAuthor({
+          name: interaction.member.nickname || user.tag,
+          iconURL: user.displayAvatarURL()
+        })
+        .setThumbnail(user.displayAvatarURL({ size: 256 }))
+        .setFooter({
+          text: 'Ferret9 Bot',
+          iconURL: interaction.client.user.displayAvatarURL()
+        })
+        .setTimestamp();
+      
+      // Add work summary as a separate field with preserved formatting
+      signOutEmbed.addFields({
+        name: '📝 Work Summary',
+        value: `### Session Accomplishments\n${workSummary.length > 1000 
+          ? `${workSummary.substring(0, 1000)}...\n\n*Summary truncated due to length*`
+          : workSummary}`,
+        inline: false
+      });
+      
+      // Add available commands field
+      signOutEmbed.addFields({
+        name: '📋 Available Commands',
+        value: commandList
+      });
+      
+      // Send the embed to user's channel
+      await channel.send({ embeds: [signOutEmbed] });
+      
+      // Remove both Working and OnBreak roles if configured
+      if (config.roles && config.roles.working && config.roles.onBreak) {
+        try {
+          // Remove both roles regardless of which one the user has
+          if (member.roles.cache.has(config.roles.working)) {
+            await member.roles.remove(config.roles.working);
+          }
+          if (member.roles.cache.has(config.roles.onBreak)) {
+            await member.roles.remove(config.roles.onBreak);
+          }
+          console.log(`Removed all work status roles for ${user.tag} during signout`);
+        } catch (roleError) {
+          console.error('Error removing roles:', roleError);
+        }
+      } else {
+        console.log('Roles not configured properly in config:', config.roles);
+      }
+      
+      // Send confirmation to user
+      await submission.editReply({
+        content: `✅ You've successfully signed out at **${timeString}** on **${dateString}**. Your work session lasted ${workDurationString}.`
+      });
+      
+      // Log the activity
+      await logActivity(user.id, 'SignOut', `User signed out: ${workSummary.substring(0, 100)}${workSummary.length > 100 ? '...' : ''}`);
+      
+    } catch (error) {
+      console.error('Error in signout command:', error);
+      try {
+        if (!interaction.replied && !interaction.deferred) {
+          await interaction.reply({
+            content: "❌ An error occurred. Please try again.",
+            flags: { ephemeral: true }
+          }).catch(err => console.error('Error replying to interaction:', err));
+        } else if (interaction.deferred && !interaction.replied) {
+          await interaction.editReply({
+            content: "❌ An error occurred. Please try again."
+          }).catch(err => console.error('Error editing reply:', err));
+        }
+      } catch (replyError) {
+        console.error('Error sending error message:', replyError);
+      }},
+}; 

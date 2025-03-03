@@ -1,0 +1,61 @@
+const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
+const { ChannelType, EmbedBuilder } = require('discord.js');
+const { getUserChannelId, updateAllUserChannels } = require('../utils/channelManager');
+const fs = require('fs');
+const path = require('path');
+
+module.exports = {
+    data: new SlashCommandBuilder()
+        .setName('updatechannels')
+        .setDescription('Updates all user channels to make them private')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    
+    async execute(interaction) {
+        await interaction.deferReply({ ephemeral: true });
+        
+        try {
+            // Get the user channels data file path
+            const userChannelsPath = path.join(__dirname, '..', 'data', 'userChannels.json');
+            
+            // Check if the file exists
+            if (!fs.existsSync(userChannelsPath)) {
+                return interaction.editReply({ 
+                    content: 'No user channels data found. No channels to update.', 
+                    ephemeral: true 
+                });
+            }
+            
+            // Read the user channels data
+            const userChannelsData = JSON.parse(fs.readFileSync(userChannelsPath, 'utf8'));
+            
+            // Get the guild
+            const guild = interaction.guild;
+            
+            // Update all user channels
+            const result = await updateAllUserChannels(guild, userChannelsData);
+            
+            // Create a response embed
+            const embed = new EmbedBuilder()
+                .setColor('#4CAF50')
+                .setTitle('Channel Privacy Update')
+                .setDescription(`Updated privacy settings for user channels`)
+                .addFields(
+                    { name: 'Channels Updated', value: `${result.updated}`, inline: true },
+                    { name: 'Channels Not Found', value: `${result.notFound}`, inline: true },
+                    { name: 'Errors', value: `${result.errors}`, inline: true }
+                )
+                .setFooter({ text: 'Ferret9 Bot' })
+                .setTimestamp();
+            
+            // Send the response
+            await interaction.editReply({ embeds: [embed], ephemeral: true });
+            
+        } catch (error) {
+            console.error('Error updating channels:', error);
+            await interaction.editReply({ 
+                content: `Error updating channels: ${error.message}`, 
+                ephemeral: true 
+            });
+        }
+    },
+}; 

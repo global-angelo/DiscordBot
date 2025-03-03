@@ -1,0 +1,184 @@
+const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const { getUserChannelId } = require('../utils/channelManager');
+const { recordBreak } = require('../utils/dynamoDbManager');
+const { getActiveSession } = require('../utils/dynamoDbManager');
+const { logActivity } = require('../utils/dynamoDbManager');
+const { getAvailableCommands, formatCommandList } = require('../utils/commandHelper');
+const config = require('../config/config');
+
+// Role IDs
+const WORKING_ROLE_ID = '1345394475165548615';
+const ON_BREAK_ROLE_ID = '1345394581642022933';
+
+module.exports = {
+  data: new SlashCommandBuilder()
+    .setName('break')
+    .setDescription('Take a break from work')
+    .addStringOption(option => 
+      option
+        .setName('reason')
+        .setDescription('Reason for taking a break (optional)')
+        .setRequired(false)
+    ),
+  
+  async execute(interaction) {
+    try {
+// Check if interaction was already replied to or deferred
+      if (interaction.replied || interaction.deferred) {
+        console.log('Interaction already handled. Skipping.');
+        return;
+      }
+      
+      // Defer reply to prevent timeout
+      await interaction.deferReply({ ephemeral: true });
+      
+      const user = interaction.user;
+      const guild = interaction.guild;
+      const reason = interaction.options.getString('reason');
+      
+      // Get the member object to check roles
+      const member = await guild.members.fetch(user.id);
+      
+      // Check if user already has the onBreak role
+      if (member.roles.cache.has(config.roles.onBreak)) {
+        await interaction.editReply({
+          content: "❌ You're already on break. Use `/back` to return from your break."
+        });
+        return;
+      }
+      
+      // Check if user has an active session
+      const activeSession = await getActiveSession(user.id);
+      if (!activeSession) {
+        await interaction.editReply({
+          content: "❌ You don't have an active work session. Use `/signin` to start working first."
+        });
+        return;
+      }
+      
+      // Check if user is already on break
+      if (activeSession.Status === 'Break') {
+        await interaction.editReply({
+          content: "❌ You're already on break. Use `/back` to return from your break."
+        });
+        return;
+      }
+      
+      // Check if user is signed out
+      if (activeSession.Status === 'SignedOut') {
+        await interaction.editReply({
+          content: "❌ You're currently signed out. Use `/signin` to start a new work session."
+        });
+        return;
+      }
+      
+      // Get user's channel ID
+      const channelId = await getUserChannelId(user.id, guild.id);
+      if (!channelId) {
+        await interaction.editReply({
+          content: "❌ You don't have a personal log channel. Use `/start` to set it up."
+        });
+        return;
+      }
+      
+      // Get the channel
+      const channel = guild.channels.cache.get(channelId);
+      if (!channel) {
+        await interaction.editReply({
+          content: "❌ Your personal log channel seems to be missing. Please use the `/start` command to set it up again."
+        });
+        return;
+      }
+      
+      // Record break in DynamoDB
+      const breakStartTime = await recordBreak(user.id, reason);
+      
+      // Log the activity
+      await logActivity(user.id, 'Break', reason || 'No reason provided');
+      
+      // Get current time and date
+      const now = new Date();
+      const timeString = now.toLocaleTimeString('en-US', { 
+        hour: '2-digit', 
+        minute: '2-digit',
+        hour12: true 
+      });
+      
+      const dateString = now.toLocaleDateString('en-US', {
+        weekday: 'long',
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric'
+      });
+      
+      // Get available commands for break users
+      const commandInfo = getAvailableCommands('Break');
+      const commandList = formatCommandList(commandInfo.commands);
+
+      // Create break embed
+      const breakEmbed = new EmbedBuilder()
+        .setColor('#FF9800')
+        .setTitle('☕ ON BREAK')
+        .setDescription(`# ${user} is now on break`)
+        .addFields(
+          {
+            name: '🕒 Break Started',
+            value: `\`\`\`${timeString}\`\`\``,
+            inline: false
+          },
+          {
+            name: '📋 Available Commands',
+            value: commandList
+          }
+        )
+        .setAuthor({
+          name: interaction.member.nickname || user.tag,
+          iconURL: user.displayAvatarURL()
+        })
+        .setThumbnail(user.displayAvatarURL({ size: 256 }))
+        .setFooter({
+          text: 'Ferret9 Bot',
+          iconURL: interaction.client.user.displayAvatarURL()
+        })
+        .setTimestamp();
+
+      // Send the embed to user's channel
+      await channel.send({ embeds: [breakEmbed] });
+      
+      // Add the On Break role and remove Working role if configured
+      if (config.roles && config.roles.working && config.roles.onBreak) {
+        try {
+          await member.roles.remove(config.roles.working);
+          await member.roles.add(config.roles.onBreak);
+          console.log(`Updated roles for ${user.tag}: removed working, added onBreak`);
+        } catch (roleError) {
+          console.error('Error updating roles:', roleError);
+        }
+      } else {
+        console.log('Roles not configured properly in config:', config.roles);
+      }
+      
+      // Send confirmation to user
+      await interaction.editReply({
+        content: `✅ You're now on break as of **${timeString}**. Use \`/back\` when you return.`
+      });
+      
+    } catch (error) {
+      console.error('Error in break command:', error);
+      try {
+        if (!interaction.replied && !interaction.deferred) {
+          await interaction.reply({
+            content: "❌ An error occurred. Please try again.",
+            ephemeral: true
+          }).catch(err => console.error('Error replying to interaction:', err));
+        } else if (interaction.deferred && !interaction.replied) {
+          await interaction.editReply({
+            content: "❌ An error occurred. Please try again."
+          }).catch(err => console.error('Error editing reply:', err));
+        }
+      } catch (replyError) {
+        console.error('Error sending error message:', replyError);
+      }
+    }
+  },
+}; 

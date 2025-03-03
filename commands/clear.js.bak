@@ -1,0 +1,160 @@
+const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits } = require('discord.js');
+
+module.exports = {
+  data: new SlashCommandBuilder()
+    .setName('clear')
+    .setDescription('Clear messages from a channel or from a specific user')
+    .addIntegerOption(option => 
+      option.setName('amount')
+        .setDescription('Number of messages to delete (1-100)')
+        .setRequired(true)
+        .setMinValue(1)
+        .setMaxValue(100))
+    .addUserOption(option => 
+      option.setName('user')
+        .setDescription('Only delete messages from this user (optional)')
+        .setRequired(false))
+    .addChannelOption(option => 
+      option.setName('channel')
+        .setDescription('Channel to clear messages from (defaults to current channel)')
+        .setRequired(false))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages),
+  
+  async execute(interaction) {
+    try {
+      // Defer reply to prevent timeout
+      await interaction.deferReply({ ephemeral: true });
+      
+      // Get options
+      const amount = interaction.options.getInteger('amount');
+      const targetUser = interaction.options.getUser('user');
+      const targetChannel = interaction.options.getChannel('channel') || interaction.channel;
+      
+      // Check if bot has permission to manage messages in the target channel
+      const botMember = interaction.guild.members.me;
+      const botPermissions = targetChannel.permissionsFor(botMember);
+      
+      if (!botPermissions.has(PermissionFlagsBits.ManageMessages)) {
+        await interaction.editReply({
+          content: `❌ I don't have permission to delete messages in <#${targetChannel.id}>. Please give me the 'Manage Messages' permission.`,
+          ephemeral: true
+        });
+        return;
+      }
+      
+      // Fetch messages
+      const messages = await targetChannel.messages.fetch({ limit: 100 });
+      
+      // Filter messages if a user is specified
+      let messagesToDelete = messages;
+      if (targetUser) {
+        messagesToDelete = messages.filter(msg => msg.author.id === targetUser.id);
+      }
+      
+      // Limit to the requested amount and ensure they're not older than 14 days
+      // (Discord API limitation: bulk delete only works on messages less than 14 days old)
+      const twoWeeksAgo = Date.now() - (14 * 24 * 60 * 60 * 1000);
+      messagesToDelete = messagesToDelete
+        .filter(msg => msg.createdTimestamp > twoWeeksAgo)
+        .first(amount);
+      
+      // Check if we have any messages to delete
+      if (messagesToDelete.length === 0) {
+        await interaction.editReply({
+          content: targetUser 
+            ? `❌ No recent messages found from ${targetUser.tag} in <#${targetChannel.id}>.`
+            : `❌ No recent messages found in <#${targetChannel.id}>.`,
+          ephemeral: true
+        });
+        return;
+      }
+      
+      // Delete messages
+      let deletedCount = 0;
+      
+      // If we have multiple messages and they're all recent, use bulkDelete
+      if (messagesToDelete.length > 1) {
+        try {
+          const deleted = await targetChannel.bulkDelete(messagesToDelete);
+          deletedCount = deleted.size;
+        } catch (error) {
+          // If bulk delete fails, fall back to individual deletion
+          console.error('Bulk delete failed, falling back to individual deletion:', error);
+          
+          for (const message of messagesToDelete) {
+            try {
+              await message.delete();
+              deletedCount++;
+            } catch (err) {
+              console.error(`Failed to delete message ${message.id}:`, err);
+            }
+          }
+        }
+      } else if (messagesToDelete.length === 1) {
+        // If we only have one message, delete it individually
+        try {
+          await messagesToDelete[0].delete();
+          deletedCount = 1;
+        } catch (error) {
+          console.error('Failed to delete single message:', error);
+        }
+      }
+      
+      // Create success embed
+      const successEmbed = new EmbedBuilder()
+        .setColor('#00FF00')
+        .setTitle('🧹 Messages Cleared')
+        .setDescription(`Successfully deleted ${deletedCount} message${deletedCount !== 1 ? 's' : ''} from <#${targetChannel.id}>.`)
+        .setFooter({ 
+          text: 'Ferret9 Bot', 
+          iconURL: interaction.client.user.displayAvatarURL() 
+        })
+        .setTimestamp();
+      
+      if (targetUser) {
+        successEmbed.addFields({ 
+          name: 'User Filter', 
+          value: `Only deleted messages from ${targetUser.tag}` 
+        });
+      }
+      
+      // Send success message
+      await interaction.editReply({
+        embeds: [successEmbed],
+        ephemeral: true
+      });
+      
+      // Log the action to the activity log
+      try {
+        const { sendToChannel } = require('../utils/channelManager');
+        const logEmbed = new EmbedBuilder()
+          .setColor('#FF9900')
+          .setTitle('🧹 Messages Cleared')
+          .setDescription(`${interaction.user.tag} cleared ${deletedCount} message${deletedCount !== 1 ? 's' : ''} from <#${targetChannel.id}>.`)
+          .setFooter({ 
+            text: 'Ferret9 Bot', 
+            iconURL: interaction.client.user.displayAvatarURL() 
+          })
+          .setTimestamp();
+        
+        if (targetUser) {
+          logEmbed.addFields({ 
+            name: 'User Filter', 
+            value: `Only deleted messages from ${targetUser.tag}` 
+          });
+        }
+        
+        await sendToChannel(interaction, 'activityLog', { embeds: [logEmbed] });
+      } catch (logError) {
+        console.error('Error logging clear action:', logError);
+      }
+      
+    } catch (error) {
+      console.error('Error in clear command:', error);
+      await interaction.editReply({
+        content: `An error occurred: ${error.message}`,
+        ephemeral: true
+      });
+    }
+  },
+}; 

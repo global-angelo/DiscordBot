@@ -1,0 +1,171 @@
+const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const { getUserChannelId } = require('../utils/channelManager');
+const { startUserSession } = require('../utils/dynamoDbManager');
+const { getActiveSession } = require('../utils/dynamoDbManager');
+const { logActivity } = require('../utils/dynamoDbManager');
+const config = require('../config/config');
+const { getAvailableCommands, formatCommandList } = require('../utils/commandHelper');
+
+// Role IDs
+const WORKING_ROLE_ID = '1345394475165548615';
+
+module.exports = {
+  data: new SlashCommandBuilder()
+    .setName('signin')
+    .setDescription('Start your work session'),
+  
+  async execute(interaction) {
+    try {
+      // Check if interaction was already replied to or deferred
+      if (interaction.replied || interaction.deferred) {
+        console.log('Interaction already handled. Skipping.');
+        return;
+      }
+      
+      // Defer reply to prevent timeout - use flags instead of ephemeral
+      await interaction.deferReply({ flags: { ephemeral: true } });
+      
+      const user = interaction.user;
+      const guild = interaction.guild;
+      
+      // Get the member object to check roles
+      const member = await guild.members.fetch(user.id);
+      
+      // Check if user already has the working or onBreak role
+      if (member.roles.cache.has(config.roles.working)) {
+        await interaction.editReply({
+          content: "❌ You're already signed in and working. Use `/signout` to end your current session first."
+        });
+        return;
+      }
+      
+      if (member.roles.cache.has(config.roles.onBreak)) {
+        await interaction.editReply({
+          content: "❌ You're currently on break. Use `/back` to return from your break or `/signout` to end your session."
+        });
+        return;
+      }
+      
+      // Check if user already has an active session
+      const activeSession = await getActiveSession(user.id);
+      if (activeSession) {
+        if (activeSession.Status === 'Working') {
+          await interaction.editReply({
+            content: "❌ You already have an active work session. Use `/signout` to end your current session first."
+          });
+        } else if (activeSession.Status === 'Break') {
+          await interaction.editReply({
+            content: "❌ You're currently on break. Use `/back` to return from your break or `/signout` to end your session."
+          });
+        } else {
+          await interaction.editReply({
+            content: "❌ You already have an active session. Use `/signout` to end your current session first."
+          });
+        }
+        return;
+      }
+      
+      // Get user's channel ID
+      const channelId = await getUserChannelId(user.id, guild.id);
+      if (!channelId) {
+        await interaction.editReply({
+          content: "❌ I couldn't find your personal log channel. Please use the `/start` command first."
+        });
+        return;
+      }
+      
+      // Get the channel
+      const channel = guild.channels.cache.get(channelId);
+      if (!channel) {
+        await interaction.editReply({
+          content: "❌ Your personal log channel seems to be missing. Please use the `/start` command to set it up again."
+        });
+        return;
+      }
+      
+      // Start a new session in DynamoDB
+      const sessionId = await startUserSession(user.id, user.tag);
+      
+      // Get current time and date
+      const now = new Date();
+      const timeString = now.toLocaleTimeString('en-US', { 
+        hour: '2-digit', 
+        minute: '2-digit',
+        hour12: true 
+      });
+      
+      const dateString = now.toLocaleDateString('en-US', {
+        weekday: 'long',
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric'
+      });
+      
+      // Get available commands for active users
+      const commandInfo = getAvailableCommands('Active');
+      const commandList = formatCommandList(commandInfo.commands);
+      
+      // Create sign-in embed
+      const signInEmbed = new EmbedBuilder()
+        .setColor('#4CAF50')
+        .setTitle('🟢 SIGNED IN')
+        .setDescription(`# ${user} has signed in`)
+        .addFields(
+          {
+            name: '🕒 Time & Date',
+            value: `\`\`\`${timeString} | ${dateString}\`\`\``,
+            inline: false
+          },
+          {
+            name: '📋 Available Commands',
+            value: commandList
+          }
+        )
+        .setAuthor({
+          name: interaction.member.nickname || user.tag,
+          iconURL: user.displayAvatarURL()
+        })
+        .setThumbnail(user.displayAvatarURL({ size: 256 }))
+        .setFooter({
+          text: 'Ferret9 Bot',
+          iconURL: interaction.client.user.displayAvatarURL()
+        })
+        .setTimestamp();
+      
+      // Send the embed to user's channel
+      await channel.send({ embeds: [signInEmbed] });
+      
+      // Add the Working role if configured
+      if (config.roles.working) {
+        try {
+          await member.roles.add(config.roles.working);
+        } catch (roleError) {
+          console.error('Error adding Working role:', roleError);
+        }
+      }
+      
+      // Send confirmation to user - no need for ephemeral here since we used flags in deferReply
+      await interaction.editReply({
+        content: `✅ You've successfully signed in at **${timeString}** on **${dateString}**. Your work session has started.`
+      });
+      
+      // Log the activity
+      await logActivity(user.id, 'SignIn', 'User signed in');
+      
+    } catch (error) {
+      console.error('Error in signin command:', error);
+      
+      // Handle reply based on interaction state
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          content: "❌ An error occurred while signing in. Please try again.",
+          flags: { ephemeral: true }
+        }).catch(err => console.error('Error replying to interaction:', err));
+      } else if (interaction.deferred && !interaction.replied) {
+        await interaction.editReply({
+          content: "❌ An error occurred while signing in. Please try again."
+        }).catch(err => console.error('Error editing reply:', err));
+      }
+    }
+  },
+};

@@ -1,0 +1,230 @@
+const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const { getUserChannelId } = require('../utils/channelManager');
+const { getWeeklyReport, getDailyActivityBreakdown } = require('../utils/dynamoDbManager');
+
+// Helper function to format duration
+function formatDuration(minutes) {
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  
+  if (hours === 0) {
+    return `${mins} minute${mins !== 1 ? 's' : ''}`;
+  } else if (mins === 0) {
+    return `${hours} hour${hours !== 1 ? 's' : ''}`;
+  } else {
+    return `${hours} hour${hours !== 1 ? 's' : ''} and ${mins} minute${mins !== 1 ? 's' : ''}`;
+  }
+}
+
+// Helper function to format date as MM-DD-YYYY
+function formatDateMDY(date) {
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const year = date.getFullYear();
+  return `${month}-${day}-${year}`;
+}
+
+module.exports = {
+  data: new SlashCommandBuilder()
+    .setName('weeklyreport')
+    .setDescription('Generate a weekly report for a user')
+    .addUserOption(option => 
+      option
+        .setName('user')
+        .setDescription('User to generate report for (leave empty for your own report)')
+        .setRequired(false)
+    )
+    .addStringOption(option =>
+      option
+        .setName('date_range')
+        .setDescription('Date range in format YYYY-MM-DD:YYYY-MM-DD (start:end)')
+        .setRequired(false)
+    ),
+  
+  async execute(interaction) {
+    try {
+      await interaction.deferReply({ ephemeral: true });
+
+      const user = interaction.options.getUser('user') || interaction.user;
+      const dateRangeStr = interaction.options.getString('date_range');
+      
+      // Check if user has permission to view other users' reports
+      if (user.id !== interaction.user.id) {
+        // Check if user has admin role or permissions
+        const member = interaction.member;
+        const hasPermission = member.permissions.has('ADMINISTRATOR') || 
+                             member.roles.cache.some(role => role.name === 'Admin' || role.name === 'Manager');
+        
+        if (!hasPermission) {
+          await interaction.editReply({
+            content: "❌ You don't have permission to view other users' reports.",
+            ephemeral: true
+          });
+          return;
+        }
+      }
+
+      // Calculate date range for the report
+      let startDate, endDate;
+      
+      if (dateRangeStr) {
+        // Parse custom date range (YYYY-MM-DD:YYYY-MM-DD)
+        const dateRangeRegex = /^\d{4}-\d{2}-\d{2}:\d{4}-\d{2}-\d{2}$/;
+        if (!dateRangeRegex.test(dateRangeStr)) {
+          await interaction.editReply({
+            content: "❌ Invalid date range format. Please use YYYY-MM-DD:YYYY-MM-DD (e.g., 2025-03-03:2025-03-07)",
+            ephemeral: true
+          });
+          return;
+        }
+        
+        const [startDateStr, endDateStr] = dateRangeStr.split(':');
+        startDate = new Date(startDateStr);
+        startDate.setHours(0, 0, 0, 0);
+        
+        endDate = new Date(endDateStr);
+        endDate.setHours(23, 59, 59, 999);
+        
+        if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+          await interaction.editReply({
+            content: "❌ Invalid date format. Please use YYYY-MM-DD:YYYY-MM-DD (e.g., 2025-03-03:2025-03-07)",
+            ephemeral: true
+          });
+          return;
+        }
+        
+        if (endDate < startDate) {
+          await interaction.editReply({
+            content: "❌ End date must be after start date.",
+            ephemeral: true
+          });
+          return;
+        }
+      } else {
+        // Default to current week if no date range provided
+        const now = new Date();
+        const dayOfWeek = now.getDay(); // 0 = Sunday, 1 = Monday, etc.
+        const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1; // Convert to 0 = Monday
+        
+        // Start date is Monday of the current week
+        startDate = new Date(now);
+        startDate.setDate(now.getDate() - daysFromMonday);
+        startDate.setHours(0, 0, 0, 0);
+        
+        // End date is Sunday of the current week
+        endDate = new Date(startDate);
+        endDate.setDate(startDate.getDate() + 6);
+        endDate.setHours(23, 59, 59, 999);
+      }
+      
+      // Format date range for display
+      const startDateFormatted = startDate.toLocaleDateString('en-US', {
+        weekday: 'long',
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric'
+      });
+      
+      const endDateFormatted = endDate.toLocaleDateString('en-US', {
+        weekday: 'long',
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric'
+      });
+
+      // Get report data from DynamoDB
+      const reportData = await getWeeklyReport(startDate, endDate);
+      
+      // Filter data for the specific user
+      const userData = reportData.userStats.find(stat => stat.userId === user.id);
+      
+      if (!userData || userData.totalWorkMinutes === 0) {
+        await interaction.editReply({
+          content: `❌ No activity data found for ${user} during the selected period (${startDateFormatted} to ${endDateFormatted}).`,
+          ephemeral: true
+        });
+        return;
+      }
+      
+      // Format durations
+      const totalWorkDuration = formatDuration(userData.totalWorkMinutes);
+      const totalWorkHours = Math.round(userData.totalWorkMinutes / 60 * 10) / 10; // Round to 1 decimal place
+      
+      // Get daily breakdown from the detailed activities
+      const dailyBreakdown = await getDailyActivityBreakdown(user.id, startDate, endDate);
+      
+      // Create daily breakdown text
+      let dailyBreakdownText = '';
+      
+      if (dailyBreakdown.length === 0) {
+        dailyBreakdownText = 'No detailed daily breakdown available.';
+      } else {
+        // Sort days chronologically
+        dailyBreakdown.sort((a, b) => a.date.getTime() - b.date.getTime());
+        
+        dailyBreakdownText = dailyBreakdown.map(day => {
+          const dayName = day.date.toLocaleDateString('en-US', { weekday: 'long' });
+          const dateFormatted = formatDateMDY(day.date);
+          const hoursFormatted = Math.round(day.workMinutes / 60 * 10) / 10; // Round to 1 decimal place
+          
+          let dayText = `**${dayName} ${dateFormatted}: ${hoursFormatted} hours**\n`;
+          
+          // Filter activities to only show updates
+          const updates = day.activities.filter(activity => activity.type === 'Update');
+          
+          if (updates.length > 0) {
+            dayText += 'Things done:\n';
+            updates.forEach(activity => {
+              dayText += `- ${activity.details}\n`;
+            });
+          } else {
+            dayText += 'No updates recorded for this day.\n';
+          }
+          
+          return dayText;
+        }).join('\n');
+      }
+      
+      // Create weekly report embed
+      const reportEmbed = new EmbedBuilder()
+        .setColor('#673AB7')
+        .setTitle('📊 WEEKLY ACTIVITY REPORT')
+        .setDescription(`# ${user}'s Activity Summary\n*${startDateFormatted} to ${endDateFormatted}*`)
+        .addFields(
+          { 
+            name: '⏱️ Work Summary',
+            value: `**Total Work Hours: ${totalWorkHours} hours (${totalWorkDuration})**`,
+            inline: false
+          },
+          { 
+            name: '📅 Daily Breakdown',
+            value: dailyBreakdownText,
+            inline: false
+          }
+        )
+        .setAuthor({ 
+          name: user.tag,
+          iconURL: user.displayAvatarURL() 
+        })
+        .setThumbnail(user.displayAvatarURL({ size: 256 }))
+        .setFooter({ 
+          text: 'Ferret9 Bot', 
+          iconURL: interaction.client.user.displayAvatarURL() 
+        })
+        .setTimestamp();
+
+      // Send the report
+      await interaction.editReply({
+        embeds: [reportEmbed],
+        ephemeral: true
+      });
+
+    } catch (error) {
+      console.error('Error in weeklyreport command:', error);
+      await interaction.editReply({
+        content: "❌ An error occurred while generating the weekly report. Please try again.",
+        ephemeral: true
+      });
+    }
+  },
+}; 

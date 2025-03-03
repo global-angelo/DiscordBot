@@ -1,0 +1,103 @@
+const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits } = require('discord.js');
+
+module.exports = {
+  data: new SlashCommandBuilder()
+    .setName('clear')
+    .setDescription('Clear messages from a channel or from a specific user')
+    .addIntegerOption(option => 
+      option.setName('amount')
+        .setDescription('Number of messages to delete (1-100)')
+        .setRequired(true)
+        .setMinValue(1)
+        .setMaxValue(100))
+    .addUserOption(option => 
+      option.setName('user')
+        .setDescription('Only delete messages from this user (optional)')
+        .setRequired(false))
+    .addChannelOption(option => 
+      option.setName('channel')
+        .setDescription('Channel to clear messages from (defaults to current channel)')
+        .setRequired(false))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages),
+  
+  async execute(interaction) {
+    try {
+// Check if interaction was already replied to or deferred
+      if (interaction.replied || interaction.deferred) {
+        console.log('Interaction already handled. Skipping.');
+        return;
+      }
+      
+      
+      // Defer reply to prevent timeout
+      await interaction.deferReply({ flags: { ephemeral: true } });
+      
+      // Get options
+      const amount = interaction.options.getInteger('amount');
+      const targetUser = interaction.options.getUser('user');
+      const targetChannel = interaction.options.getChannel('channel') || interaction.channel;
+      
+      // Check if bot has permission to manage messages in the target channel
+      const botMember = interaction.guild.members.me;
+      const botPermissions = targetChannel.permissionsFor(botMember);
+      
+      if (!botPermissions.has(PermissionFlagsBits.ManageMessages)) {
+        await interaction.editReply({
+          content: `❌ I don't have permission to delete messages in <#${targetChannel.id}>. Please give me the 'Manage Messages' permission.`,
+          flags: { ephemeral: true }
+        });
+        return;
+      }
+      
+      // Fetch messages
+      const messages = await targetChannel.messages.fetch({ limit: 100 });
+      
+      // Filter messages if a user is specified
+      let messagesToDelete = messages;
+      if (targetUser) {
+        messagesToDelete = messages.filter(msg => msg.author.id === targetUser.id);
+      }
+      
+      // Limit to the requested amount and ensure they're not older than 14 days
+      // (Discord API limitation: bulk delete only works on messages less than 14 days old)
+      const twoWeeksAgo = Date.now() - (14 * 24 * 60 * 60 * 1000);
+      messagesToDelete = messagesToDelete
+        .filter(msg => msg.createdTimestamp > twoWeeksAgo)
+        .first(amount);
+      
+      // Check if we have any messages to delete
+      if (messagesToDelete.length === 0) {
+        await interaction.editReply({
+          content: targetUser 
+            ? `❌ No recent messages found from ${targetUser.tag} in <#${targetChannel.id}>.`
+            : `❌ No recent messages found in <#${targetChannel.id}>.`,
+          flags: { ephemeral: true }
+        });
+        return;
+      }
+      
+      // Delete messages
+      let deletedCount = 0;
+      
+      // If we have multiple messages and they're all recent, use bulkDelete
+      if (messagesToDelete.length > 1) {
+        try {
+          const deleted = await targetChannel.bulkDelete(messagesToDelete);
+          deletedCount = deleted.size;
+        } catch (error) {
+      console.error('Bulk delete failed, falling back to individual deletion:', error);
+      try {
+        if (!interaction.replied && !interaction.deferred) {
+          await interaction.reply({
+            content: "❌ An error occurred. Please try again.",
+            flags: { ephemeral: true }
+          }).catch(err => console.error('Error replying to interaction:', err));
+        } else if (interaction.deferred && !interaction.replied) {
+          await interaction.editReply({
+            content: "❌ An error occurred. Please try again."
+          }).catch(err => console.error('Error editing reply:', err));
+        }
+      } catch (replyError) {
+        console.error('Error sending error message:', replyError);
+      }},
+}; 

@@ -1,0 +1,131 @@
+const { SlashCommandBuilder, PermissionFlagsBits, ChannelType } = require('discord.js');
+
+module.exports = {
+  data: new SlashCommandBuilder()
+    .setName('test')
+    .setDescription('Test channel creation functionality'),
+  
+  async execute(interaction) {
+    try {
+// Check if interaction was already replied to or deferred
+      if (interaction.replied || interaction.deferred) {
+        console.log('Interaction already handled. Skipping.');
+        return;
+      }
+      
+      
+      // Defer reply to prevent timeout
+      await interaction.deferReply({ flags: { ephemeral: true } });
+      
+      const guild = interaction.guild;
+      const user = interaction.user;
+      const botMember = guild.members.me;
+      
+      // Log bot permissions
+      let debugInfo = '## Bot Permission Test\n\n';
+      debugInfo += `**Bot User:** ${interaction.client.user.tag}\n`;
+      debugInfo += `**Global Permissions:**\n`;
+      debugInfo += `- Manage Channels: ${botMember.permissions.has(PermissionFlagsBits.ManageChannels) ? '✅' : '❌'}\n`;
+      debugInfo += `- Manage Roles: ${botMember.permissions.has(PermissionFlagsBits.ManageRoles) ? '✅' : '❌'}\n`;
+      debugInfo += `- Administrator: ${botMember.permissions.has(PermissionFlagsBits.Administrator) ? '✅' : '❌'}\n\n`;
+      
+      // Get the Work Log category
+      const workLogCategory = guild.channels.cache.find(
+        c => (c.name === 'Work Log' || c.name === 'work-log' || c.name.toLowerCase() === 'work log') && 
+             c.type === ChannelType.GuildCategory
+      );
+      
+      if (workLogCategory) {
+        debugInfo += `**Work Log Category Found:** ${workLogCategory.name} (${workLogCategory.id})\n`;
+        
+        // Check bot permissions in the category
+        const categoryPerms = workLogCategory.permissionsFor(botMember);
+        debugInfo += `**Category Permissions:**\n`;
+        debugInfo += `- View Channel: ${categoryPerms.has(PermissionFlagsBits.ViewChannel) ? '✅' : '❌'}\n`;
+        debugInfo += `- Manage Channels: ${categoryPerms.has(PermissionFlagsBits.ManageChannels) ? '✅' : '❌'}\n`;
+        debugInfo += `- Manage Permissions: ${categoryPerms.has(PermissionFlagsBits.ManageRoles) ? '✅' : '❌'}\n`;
+        debugInfo += `- Send Messages: ${categoryPerms.has(PermissionFlagsBits.SendMessages) ? '✅' : '❌'}\n\n`;
+      } else {
+        debugInfo += `**Work Log Category:** Not found\n\n`;
+      }
+      
+      // Test 1: Create a channel without a category
+      debugInfo += `### Test 1: Create channel without category\n`;
+      try {
+        const testChannel1 = await guild.channels.create({
+          name: `test-${Date.now().toString().slice(-4)}`,
+          type: ChannelType.GuildText,
+          reason: 'Testing channel creation'
+        });
+        
+        debugInfo += `✅ Success! Channel created: ${testChannel1.name} (${testChannel1.id})\n\n`;
+        
+        // Delete the test channel
+        await testChannel1.delete('Test complete');
+        debugInfo += `Channel deleted successfully.\n\n`;
+      } catch (error) {
+      console.error('Error executing command:', error);
+      try {
+        if (!interaction.replied && !interaction.deferred) {
+          await interaction.reply({
+            content: "❌ An error occurred. Please try again.",
+            flags: { ephemeral: true }
+          }).catch(err => console.error('Error replying to interaction:', err));
+        } else if (interaction.deferred && !interaction.replied) {
+          await interaction.editReply({
+            content: "❌ An error occurred. Please try again."
+          }).catch(err => console.error('Error editing reply:', err));
+        }
+      } catch (replyError) {
+        console.error('Error sending error message:', replyError);
+      }
+    }
+  },
+            {
+              id: guild.client.user.id,
+              allow: [
+                PermissionFlagsBits.ViewChannel,
+                PermissionFlagsBits.SendMessages,
+                PermissionFlagsBits.ManageChannels
+              ]
+            },
+            {
+              id: user.id,
+              allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages]
+            }
+          ]
+        });
+        
+        debugInfo += `✅ Success! Channel created with permissions: ${testChannel4.name} (${testChannel4.id})\n\n`;
+        
+        // Delete the test channel
+        await testChannel4.delete('Test complete');
+        debugInfo += `Channel deleted successfully.\n\n`;
+      } catch (error) {
+        debugInfo += `❌ Error: ${error.message}\n`;
+        if (error.code) debugInfo += `Error code: ${error.code}\n\n`;
+      }
+      
+      // Send the results
+      await interaction.editReply({
+        content: debugInfo,
+        flags: { ephemeral: true }
+      });
+      
+    } catch (error) {
+      console.error('Error executing test command:', error);
+      
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({ 
+          content: `Error running tests: ${error.message}`,
+          flags: { ephemeral: true } 
+        });
+      } else {
+        await interaction.editReply({ 
+          content: `Error running tests: ${error.message}`,
+          flags: { ephemeral: true } 
+        });
+      }
+    }
+  },
+}; 
