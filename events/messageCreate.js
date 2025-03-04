@@ -1,5 +1,7 @@
 const { Events } = require('discord.js');
 const { logUserActivity } = require('../utils/activityLogger');
+const { generateAiResponse } = require('../utils/openAiHelper');
+const axios = require('axios');
 
 module.exports = {
   name: Events.MessageCreate,
@@ -25,20 +27,43 @@ module.exports = {
           }
         );
         
-        // Find the test-bot channel
-        const testChannel = message.guild.channels.cache.find(
-          channel => channel.name === 'test-bot' && channel.type === 0 // 0 is GUILD_TEXT
+        // Extract the actual message content without the mention
+        const mentionRegex = new RegExp(`<@!?${message.client.user.id}>`, 'g');
+        const prompt = message.content.replace(mentionRegex, '').trim();
+        
+        // If there's no actual message after removing the mention, provide a help message
+        if (!prompt && message.attachments.size === 0) {
+          await message.reply("Hello! I'm Ferret9. You can ask me questions or chat with me by mentioning me followed by your message. You can also send images for me to analyze.");
+          return;
+        }
+        
+        // Show typing indicator to indicate the bot is processing
+        await message.channel.sendTyping();
+        
+        // Check for image attachments
+        const imageUrls = [];
+        if (message.attachments.size > 0) {
+          message.attachments.forEach(attachment => {
+            // Check if the attachment is an image
+            if (attachment.contentType && attachment.contentType.startsWith('image/')) {
+              imageUrls.push(attachment.url);
+            }
+          });
+        }
+        
+        // Generate AI response with images if present
+        const aiResponse = await generateAiResponse(
+          prompt || "What do you see in this image?", // Default prompt if only image is sent
+          message.author.username,
+          message.client.user.username,
+          imageUrls
         );
         
-        if (testChannel) {
-          // Respond in the test-bot channel
-          await testChannel.send(`Hello ${message.author}! I noticed you mentioned me in ${message.channel}.`);
-        } else {
-          // If test-bot channel doesn't exist, respond in the same channel
-          await message.reply('Hello! I noticed you mentioned me.');
-        }
+        // Reply with the AI-generated response
+        await message.reply(aiResponse);
       } catch (error) {
         console.error('Error responding to mention:', error);
+        await message.reply("I'm sorry, I encountered an error while processing your request. Please try again later.");
       }
     }
   },
