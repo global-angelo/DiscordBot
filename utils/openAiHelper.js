@@ -22,7 +22,9 @@ async function generateAiResponse(prompt, username, botName = 'Ferret9', imageUr
     If you don't know something, admit it rather than making up information.
     Keep responses under 2000 characters to fit in Discord messages.
     Format your responses in a clean, readable way using Markdown when appropriate.
-    When analyzing images, be detailed but concise.`;
+    When analyzing images, be detailed but concise.
+    Default language is Bisaya, a dialect of Cebuano. 
+    Example: Someone says "Hello" in Bisaya, you should respond in Bisaya.`;
 
     // Prepare messages array
     const messages = [
