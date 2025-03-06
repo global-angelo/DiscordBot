@@ -1,5 +1,5 @@
 const { SlashCommandBuilder, AttachmentBuilder } = require('discord.js');
-const { generateAiResponse, splitMessage } = require('../utils/openAiHelper');
+const { generateAiResponse, splitMessage, truncateMessage } = require('../utils/claudeHelper');
 const { logUserActivity } = require('../utils/activityLogger');
 const { 
   addMessage, 
@@ -11,7 +11,7 @@ const {
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('ask')
-    .setDescription('Ask Ferret9 a question (powered by GPT-4o)')
+    .setDescription('Ask Ferret9 a question (powered by Claude 3.7 Sonnet)')
     .addStringOption(option =>
       option.setName('question')
         .setDescription('The question or message for the AI')
@@ -34,6 +34,9 @@ module.exports = {
       const question = interaction.options.getString('question') || '';
       const imageAttachment = interaction.options.getAttachment('image');
       const shouldReset = interaction.options.getBoolean('reset') || false;
+      
+      // Check if this is the special channel that requires direct replies
+      const isSpecialChannel = interaction.channel.id === '1346800900630642740';
       
       // Check if reset option is selected
       if (shouldReset) {
@@ -90,48 +93,58 @@ module.exports = {
         interaction.user.username,
         interaction.client.user.username,
         imageUrls,
-        getConversation(interaction.channel.id) // Get updated conversation history
+        isSpecialChannel ? [] : getConversation(interaction.channel.id) // Don't use conversation history for special channel
       );
       
-      // Split the response into parts if it's too long for a single message
-      const responseParts = splitMessage(aiResponse);
+      // Ensure the response is within Discord's character limit
+      const safeResponse = truncateMessage(aiResponse);
       
-      // Add AI response to conversation history (full response)
-      addMessage(interaction.channel.id, 'assistant', aiResponse);
+      // Add AI response to conversation history (truncated response)
+      addMessage(interaction.channel.id, 'assistant', safeResponse);
       
-      // Send the first part as the reply to the interaction
-      await interaction.editReply(responseParts[0]);
-      
-      // Send any additional parts as follow-up messages
-      for (let i = 1; i < responseParts.length; i++) {
-        await interaction.channel.send(responseParts[i]);
+      try {
+        // Send the response
+        if (safeResponse.length <= 2000) {
+          await interaction.editReply(safeResponse);
+        } else {
+          // Split the response into parts if it's too long for a single message
+          const responseParts = splitMessage(safeResponse);
+          
+          // Send the first part as the reply to the interaction
+          await interaction.editReply(responseParts[0]);
+          
+          // Send any additional parts as follow-up messages
+          for (let i = 1; i < responseParts.length; i++) {
+            await interaction.channel.send(responseParts[i]);
+          }
+        }
+      } catch (error) {
+        console.error('Error sending message:', error);
+        
+        // Check if the error is due to message length
+        if (error.code === 50035) {
+          try {
+            // Try to send a truncated version
+            const truncatedResponse = truncateMessage(safeResponse, 1500);
+            await interaction.editReply(truncatedResponse);
+          } catch (truncateError) {
+            console.error('Error sending truncated message:', truncateError);
+            await interaction.editReply("I apologize, but my response was too long for Discord. Please ask a more specific question.");
+          }
+        } else {
+          await interaction.editReply("I apologize, but I encountered an error while sending my response. Please try again.");
+        }
       }
     } catch (error) {
       console.error('Error executing /ask command:', error);
       
       // If we've already deferred, edit the reply
       if (interaction.deferred) {
-        // Check if the error is related to message length
-        if (error.code === 50035 && error.message && error.message.includes('2000 or fewer in length')) {
-          try {
-            // Try to send a split version of the response
-            const errorMessage = "I apologize, but my response was too long for Discord. Here it is split into multiple messages:";
-            await interaction.editReply(errorMessage);
-            
-            const responseParts = splitMessage(error.requestBody?.json?.content || "My response was too long. Please ask for a more specific or concise answer.");
-            for (const part of responseParts) {
-              await interaction.channel.send(part);
-            }
-          } catch (splitError) {
-            await interaction.editReply("I apologize, but my response was too long for Discord. Please ask for a more specific or concise answer.");
-          }
-        } else {
-          await interaction.editReply("I'm sorry, I encountered an error while processing your request. Please try again later.");
-        }
+        await interaction.editReply("I apologize, but I encountered an error while processing your request. Please try again.");
       } else {
         // Otherwise, reply normally
         await interaction.reply({
-          content: "I'm sorry, I encountered an error while processing your request. Please try again later.",
+          content: "I apologize, but I encountered an error while processing your request. Please try again.",
           ephemeral: true
         });
       }

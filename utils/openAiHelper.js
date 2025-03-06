@@ -103,6 +103,21 @@ async function generateAiResponse(prompt, username, botName = 'Ferret9', imageUr
     - For image analysis, identify code, diagrams, or technical content
     - Be concise and prioritize the most important information
     
+    DIRECT MESSAGE CAPABILITY:
+    - You can send direct messages to users when instructed
+    - When a user asks you to "DM [username]" or "message [username]", you should:
+      1. Acknowledge the request
+      2. Format your response with a special tag: [DM:username:message content]
+      3. The bot will automatically extract this tag and send the message to the user
+    - Example: If asked to "DM kennethA to remind him about the meeting", respond with:
+      "I'll send a direct message to kennethA. [DM:kennethA:Hi Kenneth, this is a reminder about your upcoming meeting.]"
+    
+    REPORT GENERATION CAPABILITY:
+    - Users can request activity reports for team members using the format: "@${botName} report [date] @user"
+    - Example: "@${botName} report March 4 @kennethA" will generate a report of Kenneth's activity on March 4
+    - The report includes sign-in/sign-out times, work duration, and activity summaries
+    - You should inform users about this capability if they ask about tracking team activity
+    
     CONVERSATION APPROACH:
     - Maintain context from previous messages
     - Ask clarifying questions when needed
