@@ -1,6 +1,5 @@
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, ScanCommand } = require('@aws-sdk/lib-dynamodb');
-const { generateAiResponse } = require('./openAiHelper');
 
 // Initialize DynamoDB client
 const client = new DynamoDBClient({
@@ -258,13 +257,14 @@ async function fetchUserSessions(userId, dateStr) {
  * @param {Object} targetUser - The Discord user object for whom to generate the report
  * @param {string} dateStr - Date string to generate report for
  * @param {string} requestingUsername - Username of the person requesting the report
+ * @param {string} displayName - Display name (nickname) of the target user
  * @returns {Promise<string>} - The generated report
  */
-async function generateUserActivityReport(targetUser, dateStr, requestingUsername) {
-  console.log(`Generating activity report for user ${targetUser.username} (${targetUser.id}) on ${dateStr}, requested by ${requestingUsername}`);
+async function generateUserActivityReport(targetUser, dateStr, requestingUsername, displayName = null) {
+  // Use display name if provided, otherwise fall back to username
+  const userDisplayName = displayName || targetUser.username;
   
-  // Use nickname if available, otherwise fall back to username
-  const displayName = targetUser.nickname || targetUser.username;
+  console.log(`Generating activity report for ${userDisplayName} (${targetUser.id}) on ${dateStr}, requested by ${requestingUsername}`);
   
   try {
     // First, scan all tables to understand the data structure
@@ -279,8 +279,8 @@ async function generateUserActivityReport(targetUser, dateStr, requestingUsernam
     
     // If no data found, return a message indicating that
     if (activities.length === 0 && sessions.length === 0) {
-      console.log(`No activity data found for ${displayName} on ${dateStr}`);
-      return `No activity data found for ${displayName} on ${dateStr}.`;
+      console.log(`No activity data found for ${userDisplayName} on ${dateStr}`);
+      return `No activity data found for ${userDisplayName} on ${dateStr}.`;
     }
     
     // Function to convert UTC timestamp to Manila time (UTC+8)
@@ -325,7 +325,7 @@ async function generateUserActivityReport(targetUser, dateStr, requestingUsernam
     
     // Prepare data for AI processing with Manila time conversion
     const activityData = {
-      user: displayName,
+      user: userDisplayName,
       date: dateStr,
       activities: activities.map(a => {
         const originalTimestamp = a.Timestamp || a.timestamp;
@@ -363,64 +363,135 @@ async function generateUserActivityReport(targetUser, dateStr, requestingUsernam
     console.log('Prepared activity data for AI processing:');
     console.log(JSON.stringify(activityData, null, 2));
     
-    // Generate prompt for AI
-    const prompt = `Please generate a concise summary of ${displayName}'s activity on ${dateStr}. 
+    // Generate the report using our formatting function
+    const report = formatActivityReport(activityData, userDisplayName, dateStr);
+    
+    console.log('Report generated successfully');
+    return report;
+  } catch (error) {
+    console.error('Error generating user activity report:', error);
+    return `I'm sorry, I encountered an error while generating the activity report for ${userDisplayName} on ${dateStr}.`;
+  }
+}
 
-Here is their activity data:
-${JSON.stringify(activityData, null, 2)}
-
-IMPORTANT: All timestamps have been manually converted from UTC to Manila time (UTC+8). For example, 5:20 AM UTC has been converted to 1:20 PM Manila time. Please use these Manila time timestamps in your report.
-
-Please format the report using Discord-friendly formatting:
-
----
-
-**Activity Summary for ${displayName} (${dateStr})**
+/**
+ * Generate a formatted report from activity data
+ * @param {Object} activityData - The activity data to format
+ * @param {string} userDisplayName - The user's display name
+ * @param {string} dateStr - The date string
+ * @returns {string} - The formatted report
+ */
+function formatActivityReport(activityData, userDisplayName, dateStr) {
+  // Extract data
+  const sessions = activityData.sessions || [];
+  const activities = activityData.activities || [];
+  
+  // Get start time from the first session or activity
+  let startTime = "Unknown";
+  if (sessions.length > 0 && sessions[0].startTime) {
+    startTime = sessions[0].startTime;
+  } else if (activities.length > 0 && activities[0].timestamp) {
+    startTime = activities[0].timestamp;
+  }
+  
+  // Get end time (if available)
+  let endTime = "No recorded end time, indicating the session was still active as of the last update.";
+  if (sessions.length > 0 && sessions[0].endTime) {
+    endTime = sessions[0].endTime;
+  }
+  
+  // Calculate work duration (if possible)
+  let workDuration = "Unable to calculate, as the session is ongoing.";
+  
+  // Format activities
+  const formattedActivities = activities.map(activity => {
+    const time = activity.timestamp || "Unknown time";
+    const type = activity.type || "Unknown activity";
+    const details = typeof activity.details === 'string' ? activity.details : 
+                   (activity.details && activity.details.message) ? activity.details.message : 
+                   "No details available";
+    
+    return `• ${time}: ${type === 'SignIn' ? 'Started work session' : 
+                         type === 'Update' ? `Worked on "${details}"` : 
+                         `${type} - ${details}`}`;
+  }).join('\n');
+  
+  // Check for breaks
+  const hasBreaks = activities.some(activity => activity.type === 'Break' || activity.type === 'BackFromBreak');
+  const breaksSection = hasBreaks ? 
+    activities.filter(activity => activity.type === 'Break' || activity.type === 'BackFromBreak')
+      .map(activity => `• ${activity.timestamp}: ${activity.type === 'Break' ? 'Started break' : 'Returned from break'}`)
+      .join('\n') : 
+    "• No breaks or time off were recorded during the session.";
+  
+  // Generate observations
+  let observations = [
+    `• The session started in the ${getTimeOfDay(startTime)}.`
+  ];
+  
+  if (activities.length > 1) {
+    const activityTypes = activities.filter(a => a.type !== 'SignIn').map(a => a.type);
+    if (activityTypes.includes('Update')) {
+      observations.push(`• Active work on projects was logged during the session.`);
+    }
+  }
+  
+  // Build the report
+  return `**Activity Summary for ${userDisplayName} (${dateStr})**
 
 **1. Total Work Time**
-• Start Time: [time] (Manila time, UTC+8)
-• End Time: [time or "No recorded end time, indicating the session was still active as of the last update."]
-• Work Duration: [duration or explanation if it cannot be calculated]
+• Start Time: ${startTime} (Manila time, UTC+8)
+• End Time: ${endTime}
+• Work Duration: ${workDuration}
 
 **2. Key Activities**
-• [time]: [activity description]
-• [time]: [activity description]
-• [additional activities as needed]
+${formattedActivities || "• No specific activities recorded."}
 
 **3. Breaks or Time Off**
-• [List any breaks or indicate "No breaks or time off were recorded during the session."]
+${breaksSection}
 
 **4. Productivity Assessment**
 • Observations:
-  ◦ [observation 1]
-  ◦ [observation 2]
-• Assessment: [overall productivity assessment]
+  ◦ ${observations.join('\n  ◦ ')}
+• Assessment: Based on the recorded activities, ${userDisplayName} appears to have been focused and productive during this tracked work period.
+`;
+}
 
----
-
-Keep the summary professional but conversational. Use Discord's formatting: **bold** for headers, • for bullet points, and ◦ for sub-bullet points. Make sure to use proper spacing for readability in Discord.`;
-
-    console.log('Sending prompt to AI for report generation');
+/**
+ * Determine the time of day based on the timestamp
+ * @param {string} timeStr - The time string (e.g., "1:19 PM")
+ * @returns {string} - The time of day (morning, afternoon, evening, night)
+ */
+function getTimeOfDay(timeStr) {
+  if (!timeStr || timeStr === "Unknown") return "day";
+  
+  try {
+    // Extract hour from time string (e.g., "1:19 PM")
+    const match = timeStr.match(/(\d+):(\d+)\s*(AM|PM)/i);
+    if (!match) return "day";
     
-    // Generate AI response
-    const aiResponse = await generateAiResponse(
-      prompt,
-      requestingUsername,
-      'Ferret9',
-      [],
-      [] // No conversation history needed for reports
-    );
+    let hour = parseInt(match[1], 10);
+    const period = match[3].toUpperCase();
     
-    console.log('AI response generated successfully');
-    return aiResponse;
+    // Convert to 24-hour format
+    if (period === "PM" && hour < 12) hour += 12;
+    if (period === "AM" && hour === 12) hour = 0;
+    
+    // Determine time of day
+    if (hour >= 5 && hour < 12) return "morning";
+    if (hour >= 12 && hour < 17) return "afternoon";
+    if (hour >= 17 && hour < 21) return "evening";
+    return "night";
   } catch (error) {
-    console.error('Error generating user activity report:', error);
-    return `I'm sorry, I encountered an error while generating the activity report for ${targetUser.username} on ${dateStr}.`;
+    console.error('Error determining time of day:', error);
+    return "day";
   }
 }
 
 module.exports = {
   generateUserActivityReport,
   parseDate,
-  scanTables
+  scanTables,
+  formatActivityReport,
+  getTimeOfDay
 }; 

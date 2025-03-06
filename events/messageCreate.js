@@ -1,6 +1,5 @@
 const { Events } = require('discord.js');
 const { logUserActivity } = require('../utils/activityLogger');
-const { generateAiResponse, splitMessage, truncateMessage } = require('../utils/claudeHelper');
 const { generateUserActivityReport, scanTables } = require('../utils/activityReporter');
 const { 
   addMessage, 
@@ -124,15 +123,8 @@ module.exports = {
             await message.reply(`Generating activity report for ${displayName} on ${dateStr}... This may take a moment.`);
             
             try {
-              // Import the required functions
-              const { generateUserActivityReport } = require('../utils/activityReporter');
-              
               // Get the report
-              const report = await generateUserActivityReport(
-                { ...targetUser, nickname: displayName },
-                dateStr, 
-                message.author.username
-              );
+              const report = await generateUserActivityReport(targetUser, dateStr, message.author.username, displayName);
               
               console.log('\n=== AI RESPONSE RECEIVED ===');
               console.log(report);
@@ -149,29 +141,85 @@ module.exports = {
                   .setTimestamp()
                   .setFooter({ text: `Requested by ${message.author.username}`, iconURL: message.author.displayAvatarURL() });
                 
-                // Add the full report as a single field to preserve formatting
-                reportEmbed.addFields({ 
-                  name: '\u200B', // Invisible character for no title
-                  value: report.length > 4096 ? report.substring(0, 4093) + '...' : report 
+                // Split the report into sections based on markdown headers
+                const sections = report.split(/\*\*\d+\.\s+[^*]+\*\*/).filter(section => section.trim().length > 0);
+                
+                // Get the header titles
+                const headerMatches = report.match(/\*\*\d+\.\s+[^*]+\*\*/g) || [];
+                
+                // Process each section with its corresponding header
+                headerMatches.forEach((header, index) => {
+                  if (index < sections.length) {
+                    const content = sections[index].trim();
+                    
+                    // Add the section as a field
+                    reportEmbed.addFields({ 
+                      name: header.replace(/\*\*/g, ''), 
+                      value: content.length > 1024 ? content.substring(0, 1021) + '...' : content 
+                    });
+                  }
                 });
                 
-                // If the report is too long for a single field, split it
-                if (report.length > 4096) {
-                  reportEmbed.fields = []; // Clear the fields
+                // If no sections were found or the report is too long, fall back to the original approach
+                if (reportEmbed.fields.length === 0) {
+                  // Try to extract the main sections manually
+                  const totalWorkTimeMatch = report.match(/\*\*1\.\s+Total\s+Work\s+Time\*\*([\s\S]*?)(?=\*\*2\.|\*\*3\.|\*\*4\.|\*\*5\.|$)/i);
+                  const keyActivitiesMatch = report.match(/\*\*2\.\s+Key\s+Activities\*\*([\s\S]*?)(?=\*\*3\.|\*\*4\.|\*\*5\.|$)/i);
+                  const breaksMatch = report.match(/\*\*3\.\s+Breaks\s+or\s+Time\s+Off\*\*([\s\S]*?)(?=\*\*4\.|\*\*5\.|$)/i);
+                  const productivityMatch = report.match(/\*\*4\.\s+Productivity\s+Assessment\*\*([\s\S]*?)(?=\*\*5\.|$)/i);
                   
-                  // Split the report into chunks of 1024 characters
-                  const chunks = [];
-                  for (let i = 0; i < report.length; i += 1024) {
-                    chunks.push(report.substring(i, Math.min(i + 1024, report.length)));
+                  if (totalWorkTimeMatch) {
+                    reportEmbed.addFields({ 
+                      name: '1. Total Work Time', 
+                      value: totalWorkTimeMatch[1].trim().length > 1024 ? 
+                        totalWorkTimeMatch[1].trim().substring(0, 1021) + '...' : 
+                        totalWorkTimeMatch[1].trim() 
+                    });
                   }
                   
-                  // Add each chunk as a field
-                  chunks.forEach((chunk, index) => {
+                  if (keyActivitiesMatch) {
                     reportEmbed.addFields({ 
-                      name: index === 0 ? '\u200B' : `Continued (${index + 1}/${chunks.length})`, 
-                      value: chunk 
+                      name: '2. Key Activities', 
+                      value: keyActivitiesMatch[1].trim().length > 1024 ? 
+                        keyActivitiesMatch[1].trim().substring(0, 1021) + '...' : 
+                        keyActivitiesMatch[1].trim() 
                     });
-                  });
+                  }
+                  
+                  if (breaksMatch) {
+                    reportEmbed.addFields({ 
+                      name: '3. Breaks or Time Off', 
+                      value: breaksMatch[1].trim().length > 1024 ? 
+                        breaksMatch[1].trim().substring(0, 1021) + '...' : 
+                        breaksMatch[1].trim() 
+                    });
+                  }
+                  
+                  if (productivityMatch) {
+                    reportEmbed.addFields({ 
+                      name: '4. Productivity Assessment', 
+                      value: productivityMatch[1].trim().length > 1024 ? 
+                        productivityMatch[1].trim().substring(0, 1021) + '...' : 
+                        productivityMatch[1].trim() 
+                    });
+                  }
+                  
+                  // If still no fields, use the original chunking approach
+                  if (reportEmbed.fields.length === 0) {
+                    // Split the report into chunks of 1024 characters
+                    const chunks = [];
+                    for (let i = 0; i < report.length; i += 1024) {
+                      chunks.push(report.substring(i, Math.min(i + 1024, report.length)));
+                    }
+                    
+                    // Add each chunk as a field
+                    chunks.forEach((chunk, index) => {
+                      reportEmbed.addFields({ 
+                        name: index === 0 ? 'Report' : `Continued (${index + 1}/${chunks.length})`, 
+                        value: chunk 
+                      });
+                    });
+                  }
                 }
                 
                 await message.reply({ embeds: [reportEmbed] });
