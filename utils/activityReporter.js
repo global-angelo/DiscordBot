@@ -386,55 +386,104 @@ function formatActivityReport(activityData, userDisplayName, dateStr) {
   const sessions = activityData.sessions || [];
   const activities = activityData.activities || [];
   
+  console.log("DEBUG - Sessions data:", JSON.stringify(sessions, null, 2));
+  console.log("DEBUG - Activities data:", JSON.stringify(activities, null, 2));
+  
   // Get start time from the first session or activity
   let startTime = "Unknown";
+  let startTimestamp = null;
   if (sessions.length > 0 && sessions[0].startTime) {
     startTime = sessions[0].startTime;
-  } else if (activities.length > 0 && activities[0].timestamp) {
-    startTime = activities[0].timestamp;
+    startTimestamp = new Date(sessions[0].originalStartTime);
+    console.log("DEBUG - Start timestamp:", startTimestamp, "from", sessions[0].originalStartTime);
+  } else if (activities.length > 0) {
+    // Find the first SignIn activity
+    const signInActivity = activities.find(a => (a.type === 'SignIn' || a.ActivityType === 'SignIn'));
+    if (signInActivity) {
+      startTime = signInActivity.timestamp;
+      startTimestamp = new Date(signInActivity.originalTimestamp);
+      console.log("DEBUG - Start timestamp from SignIn activity:", startTimestamp, "from", signInActivity.originalTimestamp);
+    }
   }
   
   // Get end time (if available)
   let endTime = "No recorded end time, indicating the session was still active as of the last update.";
+  let endTimestamp = null;
   if (sessions.length > 0 && sessions[0].endTime) {
     endTime = sessions[0].endTime;
+    endTimestamp = new Date(sessions[0].originalEndTime);
+    console.log("DEBUG - End timestamp from session:", endTimestamp, "from", sessions[0].originalEndTime);
+  } else if (activities.length > 0) {
+    // Find the last SignOut activity
+    const signOutActivity = activities.find(a => (a.type === 'SignOut' || a.ActivityType === 'SignOut'));
+    if (signOutActivity) {
+      endTime = signOutActivity.timestamp;
+      endTimestamp = new Date(signOutActivity.originalTimestamp);
+      console.log("DEBUG - End timestamp from SignOut activity:", endTimestamp, "from", signOutActivity.originalTimestamp);
+    }
   }
   
   // Calculate work duration (if possible)
   let workDuration = "Unable to calculate, as the session is ongoing.";
+  let totalHours = 0;
+  
+  if (startTimestamp && endTimestamp) {
+    console.log("DEBUG - Calculating duration between:", startTimestamp, "and", endTimestamp);
+    
+    // Check if end time is earlier than start time (next day)
+    let durationMs = endTimestamp - startTimestamp;
+    
+    // If duration is negative, it means the end time is on the next day
+    if (durationMs < 0) {
+      console.log("DEBUG - Negative duration detected, assuming end time is on the next day");
+      // Add 24 hours to account for crossing midnight
+      durationMs += 24 * 60 * 60 * 1000;
+    }
+    
+    // Convert to hours and minutes
+    totalHours = durationMs / (1000 * 60 * 60);
+    const hours = Math.floor(totalHours);
+    const minutes = Math.floor((totalHours - hours) * 60);
+    workDuration = `${hours} hour${hours !== 1 ? 's' : ''} and ${minutes} minute${minutes !== 1 ? 's' : ''}`;
+    console.log("DEBUG - Calculated duration:", workDuration, "Total hours:", totalHours);
+  } else if (startTimestamp) {
+    // Calculate duration from start time to now
+    const now = new Date();
+    const durationMs = now - startTimestamp;
+    // Convert to hours and minutes
+    totalHours = durationMs / (1000 * 60 * 60);
+    const hours = Math.floor(totalHours);
+    const minutes = Math.floor((totalHours - hours) * 60);
+    workDuration = `${hours} hour${hours !== 1 ? 's' : ''} and ${minutes} minute${minutes !== 1 ? 's' : ''} (ongoing)`;
+    console.log("DEBUG - Calculated ongoing duration:", workDuration, "Total hours:", totalHours);
+  }
   
   // Format activities
   const formattedActivities = activities.map(activity => {
     const time = activity.timestamp || "Unknown time";
-    const type = activity.type || "Unknown activity";
+    const type = activity.type || activity.ActivityType || "Unknown activity";
     const details = typeof activity.details === 'string' ? activity.details : 
                    (activity.details && activity.details.message) ? activity.details.message : 
-                   "No details available";
+                   activity.Details || "No details available";
     
     return `• ${time}: ${type === 'SignIn' ? 'Started work session' : 
+                         type === 'SignOut' ? 'Ended work session' :
                          type === 'Update' ? `Worked on "${details}"` : 
                          `${type} - ${details}`}`;
   }).join('\n');
   
   // Check for breaks
-  const hasBreaks = activities.some(activity => activity.type === 'Break' || activity.type === 'BackFromBreak');
+  const hasBreaks = activities.some(activity => activity.type === 'Break' || activity.ActivityType === 'Break' || 
+                                              activity.type === 'BackFromBreak' || activity.ActivityType === 'BackFromBreak');
   const breaksSection = hasBreaks ? 
-    activities.filter(activity => activity.type === 'Break' || activity.type === 'BackFromBreak')
-      .map(activity => `• ${activity.timestamp}: ${activity.type === 'Break' ? 'Started break' : 'Returned from break'}`)
+    activities.filter(activity => activity.type === 'Break' || activity.ActivityType === 'Break' || 
+                                 activity.type === 'BackFromBreak' || activity.ActivityType === 'BackFromBreak')
+      .map(activity => {
+        const type = activity.type || activity.ActivityType;
+        return `• ${activity.timestamp}: ${type === 'Break' ? 'Started break' : 'Returned from break'}`;
+      })
       .join('\n') : 
     "• No breaks or time off were recorded during the session.";
-  
-  // Generate observations
-  let observations = [
-    `• The session started in the ${getTimeOfDay(startTime)}.`
-  ];
-  
-  if (activities.length > 1) {
-    const activityTypes = activities.filter(a => a.type !== 'SignIn').map(a => a.type);
-    if (activityTypes.includes('Update')) {
-      observations.push(`• Active work on projects was logged during the session.`);
-    }
-  }
   
   // Build the report
   return `**Activity Summary for ${userDisplayName} (${dateStr})**
@@ -443,17 +492,13 @@ function formatActivityReport(activityData, userDisplayName, dateStr) {
 • Start Time: ${startTime} (Manila time, UTC+8)
 • End Time: ${endTime}
 • Work Duration: ${workDuration}
+• Total Hours: ${totalHours.toFixed(2)} hours
 
 **2. Key Activities**
 ${formattedActivities || "• No specific activities recorded."}
 
 **3. Breaks or Time Off**
 ${breaksSection}
-
-**4. Productivity Assessment**
-• Observations:
-  ◦ ${observations.join('\n  ◦ ')}
-• Assessment: Based on the recorded activities, ${userDisplayName} appears to have been focused and productive during this tracked work period.
 `;
 }
 
