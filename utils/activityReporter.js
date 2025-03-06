@@ -332,10 +332,10 @@ async function generateUserActivityReport(targetUser, dateStr, requestingUsernam
         const manilaTimestamp = convertToManilaTime(originalTimestamp);
         
         return {
-          type: a.ActivityType || a.activityType,
+        type: a.ActivityType || a.activityType,
           timestamp: manilaTimestamp,
           originalTimestamp: originalTimestamp,
-          details: a.Details || a.details || {},
+        details: a.Details || a.details || {},
           duration: a.Duration || a.duration,
           note: `This timestamp was converted from ${originalTimestamp} (UTC) to ${manilaTimestamp} (Manila time / UTC+8)`
         };
@@ -347,13 +347,13 @@ async function generateUserActivityReport(targetUser, dateStr, requestingUsernam
         const manilaEndTime = convertToManilaTime(originalEndTime);
         
         return {
-          id: s.id,
+        id: s.id,
           startTime: manilaStartTime,
           originalStartTime: originalStartTime,
           endTime: manilaEndTime,
           originalEndTime: originalEndTime,
-          totalWorkDuration: s.TotalWorkDuration || s.totalWorkDuration,
-          breakDuration: s.BreakDuration || s.breakDuration,
+        totalWorkDuration: s.TotalWorkDuration || s.totalWorkDuration,
+        breakDuration: s.BreakDuration || s.breakDuration,
           status: s.Status || s.status,
           note: `Start time was converted from ${originalStartTime} (UTC) to ${manilaStartTime} (Manila time / UTC+8)`
         };
