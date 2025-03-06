@@ -1,6 +1,18 @@
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, ScanCommand } = require('@aws-sdk/lib-dynamodb');
 
+// Username to nickname mapping
+// Add entries here to map usernames to their preferred nicknames
+const USERNAME_TO_NICKNAME = {
+  'quarxdmz': 'Sam',
+  'anjuzro': 'Angelo',
+  'asmodeus6413': 'Kenneth',
+  'abganzon_123': 'Ariel',
+  'edslil': 'Edsa',
+  'ryanantig5057': 'Ryan',
+  'winsonjicenas': 'Winsonji'
+};
+
 // Initialize DynamoDB client
 const client = new DynamoDBClient({
   region: process.env.AWS_REGION,
@@ -326,6 +338,8 @@ async function generateUserActivityReport(targetUser, dateStr, requestingUsernam
     // Prepare data for AI processing with Manila time conversion
     const activityData = {
       user: userDisplayName,
+      userId: targetUser.id,
+      username: targetUser.username,
       date: dateStr,
       activities: activities.map(a => {
         const originalTimestamp = a.Timestamp || a.timestamp;
@@ -382,6 +396,38 @@ async function generateUserActivityReport(targetUser, dateStr, requestingUsernam
  * @returns {string} - The formatted report
  */
 function formatActivityReport(activityData, userDisplayName, dateStr) {
+  // Log the display name being used
+  console.log(`Formatting report for user: ${userDisplayName} on ${dateStr}`);
+  
+  // Check if the username in the data is different from the display name
+  const storedUsername = activityData.username || activityData.user;
+  console.log(`Stored username in data: ${storedUsername}, Current display name: ${userDisplayName}`);
+  
+  // Check if we have a mapping for this username
+  let reportDisplayName = userDisplayName;
+  
+  // Try to find a match in our mapping (case insensitive)
+  if (typeof storedUsername === 'string') {
+    const lowercaseUsername = storedUsername.toLowerCase();
+    
+    // First try exact match
+    if (USERNAME_TO_NICKNAME[lowercaseUsername]) {
+      reportDisplayName = USERNAME_TO_NICKNAME[lowercaseUsername];
+      console.log(`Found exact nickname mapping: ${storedUsername} -> ${reportDisplayName}`);
+    } else {
+      // Try partial match (if username contains one of our keys)
+      for (const [key, value] of Object.entries(USERNAME_TO_NICKNAME)) {
+        if (lowercaseUsername.includes(key.toLowerCase()) || key.toLowerCase().includes(lowercaseUsername)) {
+          reportDisplayName = value;
+          console.log(`Found partial nickname mapping: ${storedUsername} -> ${reportDisplayName} (matched with ${key})`);
+          break;
+        }
+      }
+    }
+  }
+  
+  console.log(`Final display name for report: ${reportDisplayName}`);
+  
   // Extract data
   const sessions = activityData.sessions || [];
   const activities = activityData.activities || [];
@@ -486,7 +532,7 @@ function formatActivityReport(activityData, userDisplayName, dateStr) {
     "• No breaks or time off were recorded during the session.";
   
   // Build the report
-  return `**Activity Summary for ${userDisplayName} (${dateStr})**
+  return `**Activity Summary for ${reportDisplayName} (${dateStr})**
 
 **1. Total Work Time**
 • Start Time: ${startTime} (Manila time, UTC+8)

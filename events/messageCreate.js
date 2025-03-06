@@ -116,8 +116,27 @@ module.exports = {
             }
             
             // Get the member object to access nickname
-            const targetMember = await message.guild.members.fetch(targetUserId).catch(err => null);
-            const displayName = targetMember ? targetMember.displayName : targetUser.username;
+            const targetMember = await message.guild.members.fetch(targetUserId).catch(err => {
+              console.error('Error fetching member:', err);
+              return null;
+            });
+            
+            // Log member information for debugging
+            if (targetMember) {
+              console.log('- Member found:', targetMember.id);
+              console.log('- Username:', targetUser.username);
+              console.log('- Display name:', targetMember.displayName);
+              console.log('- Nickname:', targetMember.nickname);
+            } else {
+              console.log('- Member not found, using username:', targetUser.username);
+            }
+            
+            // Use nickname if available, otherwise fall back to displayName, then username
+            const displayName = targetMember ? 
+                               (targetMember.nickname || targetMember.displayName) : 
+                               targetUser.username;
+            
+            console.log('- Final display name used:', displayName);
             
             // Generate the report
             await message.reply(`Generating activity report for ${displayName} on ${dateStr}... This may take a moment.`);
