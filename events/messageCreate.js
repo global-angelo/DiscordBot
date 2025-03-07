@@ -6,6 +6,7 @@ const {
   getConversation, 
   initializeConversation 
 } = require('../utils/conversationManager');
+const { generateAiResponse, splitMessage, truncateMessage } = require('../utils/openAiHelper');
 const axios = require('axios');
 
 module.exports = {

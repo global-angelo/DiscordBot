@@ -176,7 +176,27 @@ async function generateAiResponse(prompt, username, botName = 'Ferret9', imageUr
   }
 }
 
+/**
+ * Truncate a message to fit within Discord's character limit
+ * @param {string} message - The message to truncate
+ * @param {number} maxLength - Maximum allowed length (default: 2000 for Discord's limit)
+ * @returns {string} - Truncated message
+ */
+function truncateMessage(message, maxLength = 2000) {
+  if (!message) {
+    return '';
+  }
+  
+  if (message.length <= maxLength) {
+    return message;
+  }
+  
+  // Truncate and add indicator
+  return message.substring(0, maxLength - 3) + '...';
+}
+
 module.exports = {
   generateAiResponse,
-  splitMessage
+  splitMessage,
+  truncateMessage
 }; 
