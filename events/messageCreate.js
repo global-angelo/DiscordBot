@@ -7,6 +7,7 @@ const {
   initializeConversation 
 } = require('../utils/conversationManager');
 const { generateAiResponse, splitMessage, truncateMessage } = require('../utils/openAiHelper');
+const { getAllActiveSessions } = require('../utils/dynamoDbManager');
 const axios = require('axios');
 
 module.exports = {
@@ -36,6 +37,111 @@ module.exports = {
         // Extract the actual message content without the mention
         const mentionRegex = new RegExp(`<@!?${message.client.user.id}>`, 'g');
         const prompt = message.content.replace(mentionRegex, '').trim();
+        
+        // Check for questions about who is working or signed in
+        const workingPatterns = [
+          /who.*\b(working|work|active|signed in|on duty|available)\b/i,
+          /\b(working|signed in|active)\b.*who/i,
+          /\b(who's|whos)\b.*\b(in|on|working)\b/i,
+          /\b(active users|current workers)\b/i,
+          /\b(show|list|tell).*\b(users|people|staff|team|workers)\b/i,
+          /who.*\bsigned\b/i,
+          /\bnobody\b.*\b(working|work|signed in)\b/i,
+          /\bstatus\b/i,
+          /who.*\bstatus\b/i
+        ];
+        
+        const isAskingWhoIsWorking = workingPatterns.some(pattern => pattern.test(prompt));
+        console.log(`Checking if message "${prompt}" is asking about active users: ${isAskingWhoIsWorking}`);
+        
+        if (isAskingWhoIsWorking) {
+          // Show typing indicator
+          await message.channel.sendTyping();
+          
+          console.log('User is asking about active users, fetching active sessions...');
+          // Get all active sessions
+          const activeSessions = await getAllActiveSessions();
+          
+          console.log(`Retrieved ${activeSessions.length} active sessions from database`);
+          
+          if (activeSessions.length === 0) {
+            await message.reply("Nobody is currently signed in or working.");
+            return;
+          }
+          
+          // Create an embed to show active users
+          const { EmbedBuilder } = require('discord.js');
+          const activeUsersEmbed = new EmbedBuilder()
+            .setColor('#4CAF50')
+            .setTitle('👥 Currently Active Users')
+            .setDescription(`There are **${activeSessions.length}** users currently signed in.`)
+            .setTimestamp()
+            .setFooter({ text: 'Ferret9 Bot', iconURL: message.client.user.displayAvatarURL() });
+          
+          // Group users by status
+          const workingUsers = [];
+          const onBreakUsers = [];
+          
+          const now = new Date();
+          
+          for (const session of activeSessions) {
+            // Get the guild member to display their nickname if available
+            let displayName = session.Username;
+            try {
+              const member = await message.guild.members.fetch(session.UserId);
+              displayName = member.nickname || member.displayName || session.Username;
+            } catch (error) {
+              console.log(`Could not fetch member for user ID ${session.UserId}: ${error.message}`);
+            }
+            
+            // Calculate duration
+            const startTime = new Date(session.StartTime);
+            const durationMinutes = Math.round((now - startTime) / 60000);
+            const hours = Math.floor(durationMinutes / 60);
+            const minutes = durationMinutes % 60;
+            const durationText = hours > 0 
+              ? `${hours}h ${minutes}m` 
+              : `${minutes}m`;
+            
+            // Format the session info
+            const sessionInfo = `**${displayName}** - Signed in for ${durationText}`;
+            
+            // Add to appropriate list
+            if (session.Status === 'Working') {
+              workingUsers.push(sessionInfo);
+            } else if (session.Status === 'Break') {
+              // For users on break, calculate break duration
+              let breakText = '';
+              if (session.LastBreakStart) {
+                const breakStart = new Date(session.LastBreakStart);
+                const breakMinutes = Math.round((now - breakStart) / 60000);
+                breakText = ` (on break for ${breakMinutes}m)`;
+              }
+              onBreakUsers.push(`${sessionInfo}${breakText}`);
+            }
+          }
+          
+          // Add fields to the embed
+          if (workingUsers.length > 0) {
+            activeUsersEmbed.addFields({
+              name: `🟢 Working (${workingUsers.length})`,
+              value: workingUsers.join('\n') || 'None',
+              inline: false
+            });
+          }
+          
+          if (onBreakUsers.length > 0) {
+            activeUsersEmbed.addFields({
+              name: `🟠 On Break (${onBreakUsers.length})`,
+              value: onBreakUsers.join('\n') || 'None',
+              inline: false
+            });
+          }
+          
+          // Send the embed
+          await message.reply({ embeds: [activeUsersEmbed] });
+          return;
+        }
         
         // Check for special commands
         if (prompt.toLowerCase() === 'help') {
@@ -68,6 +174,43 @@ module.exports = {
           } catch (error) {
             console.error('Error scanning tables:', error);
             await message.reply(`Error scanning tables: ${error.message}`);
+          }
+          
+          return;
+        }
+        
+        // Check for debug sessions command
+        if (prompt.toLowerCase() === 'debug sessions' || prompt.toLowerCase() === 'check sessions') {
+          await message.reply("Checking active sessions... This might take a moment.");
+          
+          try {
+            console.log('Debugging sessions - requested by user');
+            const activeSessions = await getAllActiveSessions();
+            
+            if (activeSessions.length === 0) {
+              await message.reply("No active sessions found in the database.");
+            } else {
+              let debugInfo = `Found ${activeSessions.length} active sessions:\n\n`;
+              
+              for (let i = 0; i < Math.min(activeSessions.length, 10); i++) {
+                const session = activeSessions[i];
+                debugInfo += `**Session ${i+1}**\n`;
+                debugInfo += `- **User**: ${session.Username || 'Unknown'} (${session.UserId})\n`;
+                debugInfo += `- **Status**: ${session.Status}\n`;
+                debugInfo += `- **Start Time**: ${session.StartTime}\n`;
+                debugInfo += `- **End Time**: ${session.EndTime || 'Not ended'}\n`;
+                debugInfo += `- **Work Duration**: ${session.TotalWorkDuration || 0} minutes\n\n`;
+              }
+              
+              if (activeSessions.length > 10) {
+                debugInfo += `...and ${activeSessions.length - 10} more sessions.`;
+              }
+              
+              await message.reply(debugInfo);
+            }
+          } catch (error) {
+            console.error('Error debugging sessions:', error);
+            await message.reply(`Error checking sessions: ${error.message}`);
           }
           
           return;

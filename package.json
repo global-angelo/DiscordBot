@@ -21,13 +21,18 @@
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.758.0",
     "@aws-sdk/lib-dynamodb": "^3.758.0",
+    "@discord-player/extractor": "^7.1.0",
+    "@discordjs/voice": "^0.18.0",
     "axios": "^1.8.1",
+    "discord-player": "^7.1.0",
     "discord.js": "^14.14.1",
     "dotenv": "^16.4.5",
+    "ffmpeg-static": "^5.2.0",
     "node-cron": "^3.0.3",
     "node-fetch": "^2.7.0",
     "node-schedule": "^2.1.1",
-    "openai": "^4.86.1"
+    "openai": "^4.86.1",
+    "spotify-url-info": "^3.2.18"
   },
   "devDependencies": {
     "nodemon": "^3.1.9"

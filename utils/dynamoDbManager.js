@@ -837,6 +837,73 @@ async function getAllUserChannelMappings(guildId) {
   }
 }
 
+/**
+ * Get all active sessions (Working or Break)
+ * @returns {Promise<Array>} - Array of active session objects
+ */
+async function getAllActiveSessions() {
+  console.log('Getting all active sessions from DynamoDB...');
+  
+  // First try with the standard query
+  const params = {
+    TableName: SESSIONS_TABLE,
+    FilterExpression: '(#status = :working OR #status = :break) AND (attribute_not_exists(EndTime) OR EndTime = :null)',
+    ExpressionAttributeNames: {
+      '#status': 'Status'
+    },
+    ExpressionAttributeValues: {
+      ':working': 'Working',
+      ':break': 'Break',
+      ':null': null
+    }
+  };
+  
+  try {
+    console.log('Executing query:', JSON.stringify(params, null, 2));
+    const response = await docClient.send(new ScanCommand(params));
+    console.log(`Found ${response.Items?.length || 0} active sessions with standard query`);
+    
+    // If no results, try a broader query that just checks status
+    if (!response.Items || response.Items.length === 0) {
+      console.log('No active sessions found with standard query, trying broader query...');
+      
+      const broadParams = {
+        TableName: SESSIONS_TABLE,
+        FilterExpression: '#status = :working OR #status = :break',
+        ExpressionAttributeNames: {
+          '#status': 'Status'
+        },
+        ExpressionAttributeValues: {
+          ':working': 'Working',
+          ':break': 'Break'
+        }
+      };
+      
+      console.log('Executing broader query:', JSON.stringify(broadParams, null, 2));
+      const broadResponse = await docClient.send(new ScanCommand(broadParams));
+      console.log(`Found ${broadResponse.Items?.length || 0} sessions with Working/Break status`);
+      
+      // Log first few records for debugging
+      if (broadResponse.Items && broadResponse.Items.length > 0) {
+        console.log('Sample record:', JSON.stringify(broadResponse.Items[0], null, 2));
+      }
+      
+      // Return sessions without EndTime or with EndTime = null
+      const activeSessions = (broadResponse.Items || []).filter(session => 
+        !session.EndTime || session.EndTime === null
+      );
+      
+      console.log(`After filtering, found ${activeSessions.length} active sessions`);
+      return activeSessions;
+    }
+    
+    return response.Items;
+  } catch (error) {
+    console.error('Error getting active sessions:', error);
+    return [];
+  }
+}
+
 module.exports = {
   startUserSession,
   getActiveSession,
@@ -854,5 +921,6 @@ module.exports = {
   getWeeklyReportByUser,
   storeUserChannelMapping,
   getUserChannelMapping,
-  getAllUserChannelMappings
+  getAllUserChannelMappings,
+  getAllActiveSessions
 }; 
