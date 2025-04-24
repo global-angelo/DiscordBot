@@ -1,4 +1,4 @@
-const { Events } = require('discord.js');
+const { Events, EmbedBuilder } = require('discord.js');
 const { logUserActivity } = require('../utils/activityLogger');
 const { generateUserActivityReport, scanTables } = require('../utils/activityReporter');
 const { 
@@ -7,8 +7,33 @@ const {
   initializeConversation 
 } = require('../utils/conversationManager');
 const { generateAiResponse, splitMessage, truncateMessage } = require('../utils/openAiHelper');
-const { getAllActiveSessions } = require('../utils/dynamoDbManager');
+const { getAllActiveSessions, getActiveSession } = require('../utils/dynamoDbManager');
+const config = require('../config/config');
 const axios = require('axios');
+
+// Helper function to format duration (copied from whosworking.js)
+function formatDurationWithSeconds(totalSeconds) {
+  if (totalSeconds < 0) totalSeconds = 0; // Ensure duration is not negative
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = Math.floor(totalSeconds % 60); // Use floor to avoid fractional seconds
+
+  let parts = [];
+  if (hours > 0) {
+    parts.push(`${hours}h`);
+  }
+  if (minutes > 0) {
+    parts.push(`${minutes}m`);
+  }
+  // Only show seconds if duration is less than a minute
+  if (hours === 0 && minutes === 0) {
+     parts.push(`${seconds}s`);
+  } 
+  // Optionally show seconds if needed, but default is h/m for brevity
+  // else if (seconds > 0) { parts.push(`${seconds}s`); }
+
+  return parts.length > 0 ? parts.join(' ') : '0s';
+}
 
 module.exports = {
   name: Events.MessageCreate,
@@ -59,88 +84,113 @@ module.exports = {
           await message.channel.sendTyping();
           
           console.log('User is asking about active users, fetching active sessions...');
-          // Get all active sessions
-          const activeSessions = await getAllActiveSessions();
+          // Get all active sessions using the existing function
+          // Note: getAllActiveSessions might not contain LastBreakStart or detailed BreakDuration needed for precise calculation.
+          // If precision matching /whosworking is needed, we might need to fetch each session individually using getActiveSession.
+          // For now, we'll use the data from getAllActiveSessions as available.
+          const activeSessions = await getAllActiveSessions(); 
           
           console.log(`Retrieved ${activeSessions.length} active sessions from database`);
           
           if (activeSessions.length === 0) {
-            await message.reply("Nobody is currently signed in or working.");
+            await message.reply("🍃 Nobody is currently signed in or working.");
             return;
           }
-          
-          // Create an embed to show active users
-          const { EmbedBuilder } = require('discord.js');
-          const activeUsersEmbed = new EmbedBuilder()
-            .setColor('#4CAF50')
-            .setTitle('👥 Currently Active Users')
-            .setDescription(`There are **${activeSessions.length}** users currently signed in.`)
-            .setTimestamp()
-            .setFooter({ text: 'Ferret9 Bot', iconURL: message.client.user.displayAvatarURL() });
-          
-          // Group users by status
-          const workingUsers = [];
-          const onBreakUsers = [];
-          
+
+          const userStatuses = [];
           const now = new Date();
-          
-          for (const session of activeSessions) {
-            // Get the guild member to display their nickname if available
-            let displayName = session.Username;
+
+          // Process sessions to calculate detailed times
+          await Promise.all(activeSessions.map(async (session) => {
+            // Fetch member data for display name
+            let member = null;
             try {
-              const member = await message.guild.members.fetch(session.UserId);
-              displayName = member.nickname || member.displayName || session.Username;
-            } catch (error) {
-              console.log(`Could not fetch member for user ID ${session.UserId}: ${error.message}`);
-            }
+              member = await message.guild.members.fetch(session.UserId);
+            } catch (error) { /* User might not be in the guild anymore */ }
+
+            const displayName = member?.displayName || member?.user?.username || session.Username || 'Unknown User';
             
-            // Calculate duration
+            // Calculate times based on session data
             const startTime = new Date(session.StartTime);
-            const durationMinutes = Math.round((now - startTime) / 60000);
-            const hours = Math.floor(durationMinutes / 60);
-            const minutes = durationMinutes % 60;
-            const durationText = hours > 0 
-              ? `${hours}h ${minutes}m` 
-              : `${minutes}m`;
-            
-            // Format the session info
-            const sessionInfo = `**${displayName}** - Signed in for ${durationText}`;
-            
-            // Add to appropriate list
-            if (session.Status === 'Working') {
-              workingUsers.push(sessionInfo);
-            } else if (session.Status === 'Break') {
-              // For users on break, calculate break duration
-              let breakText = '';
-              if (session.LastBreakStart) {
-                const breakStart = new Date(session.LastBreakStart);
-                const breakMinutes = Math.round((now - breakStart) / 60000);
-                breakText = ` (on break for ${breakMinutes}m)`;
-              }
-              onBreakUsers.push(`${sessionInfo}${breakText}`);
+            const totalSeconds = Math.floor((now - startTime) / 1000);
+
+            // Use BreakDuration (assuming minutes from DB) and LastBreakStart if available
+            let breakDurationSeconds = (session.BreakDuration || 0) * 60; 
+            let currentBreakSeconds = 0;
+            let status = 'Working';
+            let statusEmoji = '🟢';
+
+            if (session.Status === 'Break') {
+                status = 'On Break';
+                statusEmoji = '🔴';
+                // Calculate current break duration IF LastBreakStart is available
+                if (session.LastBreakStart) { 
+                    try {
+                        const breakStartTime = new Date(session.LastBreakStart);
+                        if (!isNaN(breakStartTime)) { // Check if date is valid
+                           currentBreakSeconds = Math.floor((now - breakStartTime) / 1000);
+                           breakDurationSeconds += currentBreakSeconds;
+                        } else {
+                            console.warn(`Invalid LastBreakStart date for user ${session.UserId}: ${session.LastBreakStart}`);
+                        }
+                    } catch(dateError) {
+                        console.error(`Error parsing LastBreakStart date for user ${session.UserId}: ${session.LastBreakStart}`, dateError);
+                    }
+                }
             }
-          }
-          
-          // Add fields to the embed
-          if (workingUsers.length > 0) {
-            activeUsersEmbed.addFields({
-              name: `🟢 Working (${workingUsers.length})`,
-              value: workingUsers.join('\n') || 'None',
-              inline: false
+
+            const workDurationSeconds = totalSeconds - breakDurationSeconds;
+            
+            userStatuses.push({
+                name: displayName,
+                status: status,
+                statusEmoji: statusEmoji,
+                workTime: formatDurationWithSeconds(workDurationSeconds),
+                breakTime: formatDurationWithSeconds(breakDurationSeconds)
             });
+          }));
+
+          // Sort users alphabetically by name
+          userStatuses.sort((a, b) => a.name.localeCompare(b.name));
+
+          // --- Build the response embed --- 
+          let description = `**${userStatuses.length} user(s) currently signed in:**\n\n`;
+          let workingCount = 0;
+          let breakCount = 0;
+          let userCounter = 1; // Initialize counter for numbering
+
+          if (userStatuses.length > 0) {
+              userStatuses.forEach(user => {
+                  // Added numbering (userCounter.)
+                  description += `${userCounter}. **${user.name}** - ${user.status}\n`;
+                  description += `   Work: \`${user.workTime}\` | Break: \`${user.breakTime}\`\n\n`; 
+                  if(user.status === 'Working') workingCount++;
+                  if(user.status === 'On Break') breakCount++;
+                  userCounter++; // Increment counter
+              });
+          } else {
+              description = '🍃 No users found with active sessions.'; // Fallback if sessions were invalid
+          }
+
+          // Check if description exceeds limit, truncate if necessary
+          const MAX_LENGTH = 4000; 
+          if (description.length > MAX_LENGTH) {
+              description = description.substring(0, MAX_LENGTH - 20) + '\n... (list truncated)';
           }
           
-          if (onBreakUsers.length > 0) {
-            activeUsersEmbed.addFields({
-              name: `🟠 On Break (${onBreakUsers.length})`,
-              value: onBreakUsers.join('\n') || 'None',
-              inline: false
-            });
-          }
+          // Removed emojis from the title
+          const title = `Current User Status (${workingCount} Working | ${breakCount} On Break)`;
+
+          const embed = new EmbedBuilder()
+            .setColor('#0099ff') 
+            .setTitle(title)
+            .setDescription(description)
+            .setFooter({ text: `As of ${now.toLocaleTimeString()}` })
+            .setTimestamp();
           
-          // Send the embed
-          await message.reply({ embeds: [activeUsersEmbed] });
-          return;
+          // Send the embed as a reply
+          await message.reply({ embeds: [embed] });
+          return; // Stop further processing in messageCreate
         }
         
         // Check for special commands
