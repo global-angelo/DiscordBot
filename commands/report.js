@@ -1,6 +1,6 @@
 const { SlashCommandBuilder } = require('discord.js');
 const { generateUserActivityReport } = require('../utils/activityReporter');
-const { splitMessage } = require('../utils/openAiHelper');
+const { splitMessage } = require('../utils/messageHelper');
 const { logUserActivity } = require('../utils/activityLogger');
 
 module.exports = {

@@ -1,12 +1,7 @@
 const { Events, EmbedBuilder } = require('discord.js');
 const { logUserActivity } = require('../utils/activityLogger');
 const { generateUserActivityReport, scanTables } = require('../utils/activityReporter');
-const { 
-  addMessage, 
-  getConversation, 
-  initializeConversation 
-} = require('../utils/conversationManager');
-const { generateAiResponse, splitMessage, truncateMessage } = require('../utils/openAiHelper');
+const { splitMessage, truncateMessage } = require('../utils/messageHelper');
 const { getAllActiveSessions, getActiveSession } = require('../utils/dynamoDbManager');
 const config = require('../config/config');
 const axios = require('axios');
@@ -449,106 +444,21 @@ module.exports = {
         
         // If there's no actual message after removing the mention, provide a help message
         if (!prompt && message.attachments.size === 0) {
-          await message.reply("Hello! I'm Ferret9, powered by Claude 3.7 Sonnet. You can ask me questions or chat with me by mentioning me followed by your message. You can also send images for me to analyze. Our conversation will maintain context until it's reset or expires after 30 minutes of inactivity.\n\nYou can also ask me to generate reports by using the format: `/report @user MM-DD-YYYY` (timestamps will be displayed in Manila time / UTC+8)\n\nOr scan the database tables with: `@Ferret9 scan tables`");
+          await message.reply("Hello! I'm your Discord bot. I can help you with various tasks through slash commands.\n\nYou can ask me to generate reports by using the format: `/report @user MM-DD-YYYY` (timestamps will be displayed in Manila time / UTC+8)\n\nOr scan the database tables with: `@Ferret9 scan tables`\n\n**Note:** AI chat functionality has been disabled. Please use the slash commands for bot features.");
           return;
         }
         
-        // Show typing indicator to indicate the bot is processing
-        await message.channel.sendTyping();
+        // AI chat functionality has been disabled - provide a helpful message instead
+        await message.reply("Hi! AI chat functionality has been disabled. However, I can still help you with:\n\n" +
+          "• **Activity Reports**: Use `/report @user MM-DD-YYYY` format\n" +
+          "• **Current Status**: Ask 'who is working' or 'who is signed in'\n" +
+          "• **Database Scan**: Use `@Ferret9 scan tables`\n" +
+          "• **All other slash commands**: Use `/help` or check the command list\n\n" +
+          "All core bot functionality (sign-in/out, time tracking, reports, etc.) works normally!");
         
-        // Check if this is the special channel that requires direct replies
-        const isSpecialChannel = message.channel.id === '1346800900630642740';
-        
-        // Check for image attachments
-        const imageUrls = [];
-        if (message.attachments.size > 0) {
-          message.attachments.forEach(attachment => {
-            // Check if the attachment is an image
-            if (attachment.contentType && attachment.contentType.startsWith('image/')) {
-              imageUrls.push(attachment.url);
-            }
-          });
-        }
-        
-        // Get or initialize conversation history
-        let conversationHistory = getConversation(message.channel.id);
-        if (conversationHistory.length === 0) {
-          initializeConversation(message.channel.id, message.client.user.username);
-          conversationHistory = getConversation(message.channel.id);
-        }
-        
-        // Add user message to conversation history
-        addMessage(message.channel.id, 'user', prompt, message.author.username);
-        
-        // Generate AI response with conversation history
-        const aiResponse = await generateAiResponse(
-          prompt || "What do you see in this image?", // Default prompt if only image is sent
-          message.author.username,
-          message.client.user.username,
-          imageUrls,
-          isSpecialChannel ? [] : getConversation(message.channel.id) // Don't use conversation history for special channel
-        );
-        
-        // Ensure the response is within Discord's character limit
-        const safeResponse = truncateMessage(aiResponse);
-        
-        // Add AI response to conversation history (truncated response)
-        addMessage(message.channel.id, 'assistant', safeResponse);
-        
-        try {
-          // Send the response
-          if (safeResponse.length <= 2000) {
-            await message.reply(safeResponse);
-          } else {
-            // Split the response into parts if it's too long for a single message
-            const responseParts = splitMessage(safeResponse);
-            
-            // Send each part as a separate message
-            const replyToFirstMessage = await message.reply(responseParts[0]);
-            
-            // Send any additional parts as follow-up messages
-            for (let i = 1; i < responseParts.length; i++) {
-              await message.channel.send(responseParts[i]);
-            }
-          }
-        } catch (error) {
-          console.error('Error sending message:', error);
-          
-          // Check if the error is due to message length
-          if (error.code === 50035) {
-            try {
-              // Try to send a truncated version
-              const truncatedResponse = truncateMessage(safeResponse, 1500);
-              await message.reply(truncatedResponse);
-            } catch (truncateError) {
-              console.error('Error sending truncated message:', truncateError);
-              await message.reply("I apologize, but my response was too long for Discord. Please ask a more specific question.");
-            }
-          } else {
-            await message.reply("I apologize, but I encountered an error while sending my response. Please try again.");
-          }
-        }
       } catch (error) {
         console.error('Error responding to mention:', error);
-        
-        // Check if the error is related to message length
-        if (error.code === 50035 && error.message.includes('2000 or fewer in length')) {
-          // Try to send a split version of the response
-          try {
-            const errorMessage = "I apologize, but my response was too long for Discord. Here it is split into multiple messages:";
-            await message.reply(errorMessage);
-            
-            const responseParts = splitMessage(error.requestBody?.json?.content || "My response was too long. Please ask for a more specific or concise answer.");
-            for (const part of responseParts) {
-              await message.channel.send(part);
-            }
-          } catch (splitError) {
-            console.error('Error sending split messages:', splitError);
-            await message.reply("I apologize, but I encountered an error while sending my response. Please try again with a more specific question.");
-          }
-        } else {
-          await message.reply("I apologize, but I encountered an error while processing your request. Please try again.");
-        }
+        await message.reply("I apologize, but I encountered an error while processing your request. Please try again.");
       }
     }
   },

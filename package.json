@@ -31,7 +31,6 @@
     "node-cron": "^3.0.3",
     "node-fetch": "^2.7.0",
     "node-schedule": "^2.1.1",
-    "openai": "^4.86.1",
     "spotify-url-info": "^3.2.18"
   },
   "devDependencies": {
