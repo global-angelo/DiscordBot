@@ -37,12 +37,27 @@ function scheduleUpdateReminders(client) {
   
   // Schedule a job for each reminder time
   reminderTimes.forEach(time => {
-    const cronExpression = `${time.minute} ${time.hour} * * *`;
-    console.log(`Scheduling reminder for ${time.hour}:${time.minute.toString().padStart(2, '0')} (cron: ${cronExpression})`);
+    console.log(`Scheduling reminder for ${time.hour}:${time.minute.toString().padStart(2, '0')} Manila time`);
     
-    schedule.scheduleJob(cronExpression, async function() {
+    // Create a recurrence rule with Manila timezone
+    const rule = new schedule.RecurrenceRule();
+    rule.hour = time.hour;
+    rule.minute = time.minute;
+    rule.tz = config.timezone || 'Asia/Manila';
+    
+    schedule.scheduleJob(rule, async function() {
       try {
-        console.log(`Running scheduled reminder at ${new Date().toLocaleTimeString()}`);
+        const manilaTime = new Date().toLocaleString('en-US', { 
+          timeZone: config.timezone || 'Asia/Manila',
+          hour12: false,
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit'
+        });
+        console.log(`Running scheduled reminder at ${manilaTime} Manila time`);
         
         // Get all guilds the bot is in
         for (const guild of client.guilds.cache.values()) {
@@ -75,8 +90,9 @@ function scheduleUpdateReminders(client) {
               continue;
             }
             
-            // Get the next scheduled reminder time
+            // Get the next scheduled reminder time in Manila timezone
             const now = new Date();
+            const manilaTimezone = config.timezone || 'Asia/Manila';
             let nextReminderTime = null;
             
             // Find the next reminder time
@@ -95,11 +111,12 @@ function scheduleUpdateReminders(client) {
               }
             }
             
-            // Format the next reminder time
+            // Format the next reminder time in Manila timezone
             const nextTimeString = nextReminderTime.toLocaleTimeString('en-US', { 
               hour: '2-digit', 
               minute: '2-digit',
-              hour12: true 
+              hour12: true,
+              timeZone: manilaTimezone
             });
             
             // Create the reminder embed
@@ -112,7 +129,7 @@ function scheduleUpdateReminders(client) {
                 { name: 'Why updates matter', value: 'Regular updates help the team stay informed about your progress and identify any blockers early.' }
               )
               .setFooter({ 
-                text: `Next reminder at ${nextTimeString}`, 
+                text: `Next reminder at ${nextTimeString} Manila time`, 
                 iconURL: client.user.displayAvatarURL() 
               })
               .setTimestamp();
